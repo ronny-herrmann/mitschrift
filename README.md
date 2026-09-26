@@ -42,21 +42,15 @@ ohne HTTPS. Für andere Rechner/Handys im Netz ist HTTPS nötig → Abschnitt 2.
 
 Linux/macOS analog (`source .venv/bin/activate`, `apt install ffmpeg` bzw. `brew install ffmpeg`).
 
-## 2. Betrieb im Hausnetz (Docker, HTTPS)
+## 2. Betrieb auf dem Server (Hetzner oder Rathaus)
 
-```bash
-cp .env.example .env         # MITSCHRIFT_HOST=mitschrift.stadt.local (DNS/Hosts-Eintrag auf den Server)
-docker compose up -d --build # erster Start lädt die Modelle (~600 MB Parakeet, ~1,6 GB Whisper)
-```
+Kurzfassung – Details und Begründung in [`docs/INFRASTRUKTUR.md`](docs/INFRASTRUKTUR.md):
 
-* `https://<MITSCHRIFT_HOST>` – Caddy stellt ein Zertifikat seiner internen CA aus. Für den Pilot
-  muss dieses Root-Zertifikat einmal auf den Clients installiert werden (`docker compose exec caddy
-  cat /data/caddy/pki/authorities/local/root.crt`), oder man hinterlegt ein städtisches Zertifikat im `Caddyfile`.
-* Keine ausgehende Verbindung im Betrieb. Der Modell-Download beim ersten Start braucht einmalig
-  Zugriff auf huggingface.co – alternativ `scripts/download_models.py` auf einem Rechner mit Internet
-  ausführen und den `models/`-Ordner auf den Server kopieren.
-* Daten liegen in `./data` (SQLite + Audio), Modelle in `./models`.
-* GPU (Stufe 2): `docker-compose.gpu.yml` als Vorlage, noch ungetestet.
+1. Server anlegen (Ubuntu 24.04), unter „Cloud config“ den Inhalt von [`deploy/cloud-init.yml`](deploy/cloud-init.yml) einfügen und darin `REPO_URL`, `ACCESS_PASSWORD`, `ACME_EMAIL` anpassen.
+2. Nach ca. 10 Minuten: Test unter `https://test.<IP-mit-Bindestrichen>.sslip.io`, Produktiv unter `https://<IP-mit-Bindestrichen>.sslip.io`.
+3. Jede Änderung auf GitHub (`main`) landet automatisch in der Test-Instanz, `stable` in der Produktiv-Instanz.
+
+Enthalten: HTTPS (Caddy), eigenes Sprachmodell (Ministral 3, llama.cpp), Firewall, automatische Sicherheitsupdates, nächtliche Sicherung.
 
 ## 3. Bake-off: Modelle auf den eigenen Aufnahmen vergleichen
 

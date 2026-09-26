@@ -125,3 +125,10 @@ def test_clean_segments_with_fake_llm():
     changes, ok_n, bad_n = bereinigung.apply_cleaned(t.segments, cleaned)
     assert ok_n == 3 and bad_n == 1
     assert [c["idx"] for c in changes if not c["ok"]] == [2]
+
+
+def test_create_protokoll_in_blocks():
+    llm = FakeLLM()
+    c = create_protokoll(make_transcript(), "ergebnis", llm, max_chars=120)
+    assert llm.calls >= 3  # mehrere Extraktionsblöcke + Schreiben
+    assert [b["id"] for b in c["bausteine"]] == [f"B{i}" for i in range(1, len(c["bausteine"]) + 1)]

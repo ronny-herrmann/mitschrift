@@ -1,0 +1,27 @@
+# HTTPS mit automatischem Let's-Encrypt-Zertifikat für beide Instanzen.
+# Ohne eigene Domain funktionieren Namen wie test.203-0-113-10.sslip.io (zeigen automatisch auf die IP).
+# Für ein städtisches Zertifikat statt Let's Encrypt:  tls /certs/zertifikat.crt /certs/schluessel.key
+(common) {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		X-Frame-Options "DENY"
+		Permissions-Policy "microphone=(self), camera=()"
+		-Server
+	}
+	request_body {
+		max_size 2GB
+	}
+}
+
+{$TEST_HOST} {
+	import common
+	reverse_proxy test-app:8000
+}
+
+{$PROD_HOST} {
+	import common
+	reverse_proxy prod-app:8000
+}

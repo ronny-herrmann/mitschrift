@@ -232,18 +232,41 @@ BAUSTEINE (JSON):
 {bausteine}"""
 
 
-def create_protokoll(t: Transcript, style: str, llm: LLMClient) -> dict:
+def _blocks(lines: list[str], max_chars: int) -> list[list[str]]:
+    out, cur, n = [], [], 0
+    for line in lines:
+        if cur and n + len(line) > max_chars:
+            out.append(cur)
+            cur, n = [], 0
+        cur.append(line)
+        n += len(line) + 1
+    if cur:
+        out.append(cur)
+    return out
+
+
+def create_protokoll(t: Transcript, style: str, llm: LLMClient, max_chars: int = 9000) -> dict:
     """Zweistufige, belegte Protokollerstellung über eine OpenAI-kompatible API."""
     style = style if style in STYLES else "zusammenfassung"
     transkript = transcript_for_prompt(t)
     seg_by_idx = {s.idx: s for s in t.segments}
 
-    # Stufe 1: Bausteine extrahieren
-    raw = llm.chat(EXTRACT_SYSTEM, EXTRACT_USER.format(transkript=transkript), temperature=0.0, json_mode=True)
-    data = _parse_json(raw)
-    bausteine = data.get("bausteine") or []
+    # Stufe 1: Bausteine extrahieren – blockweise, damit auch kleine Modelle mit begrenztem
+    # Kontext lange Sitzungen verarbeiten können
+    bausteine: list[dict] = []
+    themen: list[str] = []
+    for block in _blocks(transkript.splitlines(), max_chars):
+        raw = llm.chat(EXTRACT_SYSTEM, EXTRACT_USER.format(transkript="\n".join(block)), temperature=0.0, json_mode=True)
+        try:
+            data = _parse_json(raw)
+        except Exception:
+            log.warning("Block-Extraktion lieferte kein JSON – Block übersprungen")
+            continue
+        bausteine.extend(data.get("bausteine") or [])
+        themen.extend(t_ for t_ in (data.get("themen") or []) if t_ not in themen)
+    data = {"themen": themen}
     for i, b in enumerate(bausteine, 1):
-        b.setdefault("id", f"B{i}")
+        b["id"] = f"B{i}"
         try:
             seg_idx = int(b.get("segment"))
         except (TypeError, ValueError):

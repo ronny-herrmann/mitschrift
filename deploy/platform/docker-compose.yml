@@ -1,0 +1,59 @@
+# Gemeinsame Dienste auf dem Server (einmal pro Server, von Test- und Produktiv-Instanz genutzt):
+#   caddy – HTTPS (Let's Encrypt) und Weiterleitung auf die Instanzen
+#   llm   – eigenes Sprachmodell (llama.cpp, OpenAI-kompatible Schnittstelle, nur intern erreichbar)
+#
+# Start:  docker compose -p mitschrift-platform --env-file /opt/mitschrift/platform.env up -d
+#
+# Das Sprachmodell wird beim ersten Start einmalig von Hugging Face geladen (Ministral 3, Apache-2.0)
+# und liegt danach im Volume. Im Betrieb gibt es keine Verbindung nach außen.
+
+name: mitschrift-platform
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      TEST_HOST: ${TEST_HOST}
+      PROD_HOST: ${PROD_HOST}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [mitschrift]
+
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    restart: unless-stopped
+    # Nur im internen Netz erreichbar – kein Port nach außen.
+    command: >
+      -hf ${LLM_HF_MODEL:-mistralai/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M}
+      --host 0.0.0.0 --port 8080
+      --ctx-size ${LLM_CTX:-24576}
+      --parallel ${LLM_PARALLEL:-2}
+      --threads ${LLM_THREADS:-4}
+      --jinja
+      --temp 0.05
+      --alias mitschrift-llm
+    environment:
+      LLAMA_CACHE: /models
+    volumes:
+      - llm_models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 600s
+    networks: [mitschrift]
+
+networks:
+  mitschrift:
+    name: mitschrift
+
+volumes:
+  caddy_data:
+  caddy_config:
+  llm_models:
