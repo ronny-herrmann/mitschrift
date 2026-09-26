@@ -13,10 +13,10 @@ Browser-Cache, keine 9 Minuten für 1 Minute Audio, keine Freezes – und jeder 
 | Satz-Erkennung | Silero VAD (ONNX, im Repo enthalten, kein Download) |
 | Live | grauer Zwischentext nach ~2 s, fester Satz nach Sprechpause, optional KI-Bereinigung je Satz; Wellenform läuft mit |
 | Nach dem Stopp | Ergebnis sofort gespeichert; im Hintergrund: genauer Durchlauf, Sprechererkennung (pyannote + 3D-Speaker), KI-Bereinigung |
-| KI-Knöpfe | „Text bereinigen“ (korrigiert nur, Treue-Prüfung je Satz) und „Zusammenfassen & strukturieren“ (Belegpflicht) – mit API direkt, ohne API über NOVA |
+| KI-Knöpfe | „Text bereinigen“ (korrigiert nur, Treue-Prüfung je Satz) und „Zusammenfassen & strukturieren“ (Belegpflicht) – direkt über das eigene Sprachmodell |
 | Upload | mp3, m4a, wav, mp4, webm, ogg … (ffmpeg), Warteschlange |
 | Protokoll | Belegpflicht: jede Aussage trägt `[S12]` = Segmentnummer; Prüf-Durchlauf markiert Unbelegtes; Klick springt zur Audiostelle |
-| KI-Anbindung | Weg 1: Prompt in NOVA einfügen, Antwort zurück einfügen & prüfen · Weg 2: OpenAI-kompatible API (Ollama, vLLM, NOVA sobald verfügbar) |
+| KI-Anbindung | eigenes Sprachmodell auf dem Server: Ministral 3 (Mistral AI, Apache-2.0) über llama.cpp – keine externe KI. Ohne Modell: Prompt kopieren/einfügen als Notlösung |
 | Export | Word (.docx, auch mit Protokoll), Text, Markdown, Untertitel (.srt) |
 | Speicherung | SQLite + Audio-Dateien im `data/`-Ordner; Audio einzeln oder per Frist löschbar |
 | Lizenz-Kosten | 0 € (MIT/Apache-2.0/CC-BY-4.0) |
@@ -92,7 +92,7 @@ Code-Übersicht:
 | `bench/` | Bake-off-Skript und Text-Normalisierung |
 | `app/bereinigung.py` | KI-Bereinigung mit Treue-Prüfung (Wort- und Buchstabenvergleich, erfundene Zahlen) |
 | `app/diarize.py` | Sprechererkennung, Teilung von Segmenten an Wortgrenzen |
-| `tests/` | 23 Tests inkl. Browser-Ende-zu-Ende (Playwright, Fake-Mikrofon) |
+| `tests/` | 24 Tests inkl. Browser-Ende-zu-Ende (Playwright, Fake-Mikrofon) |
 
 ## 5. Protokoll mit Belegpflicht – warum so
 
@@ -112,8 +112,8 @@ Der Test mit NOVA hat gezeigt: Zusammenfassung gut, aber nicht originalgetreu. D
 
 * Datenfluss: Audio verlässt den Server nie; keine ausgehende Verbindung im Betrieb; kein Training mit Inhalten.
 * Einwilligungs-Hinweis vor jeder Aufnahme (Checkbox „Teilnehmende informiert“).
-* Löschkonzept: Audio getrennt vom Transkript löschbar; Fristen `RETENTION_AUDIO_DAYS`/`RETENTION_TRANSCRIPT_DAYS`.
-* Zugriff: Pilot mit Benutzer/Passwort (`BASIC_AUTH_*`) hinter HTTPS; Stufe 2: SSO (Entra ID/AD) über Caddy/OIDC.
+* Löschkonzept: Audio getrennt vom Transkript löschbar; Fristen `RETENTION_AUDIO_HOURS`/`RETENTION_TRANSCRIPT_HOURS`.
+* Zugriff: Anmeldung mit Zugangspasswort (`ACCESS_PASSWORD`, signiertes Sitzungs-Cookie, Sperre nach Fehlversuchen) hinter HTTPS; Stufe 2: SSO (Entra ID/AD).
 * Quellcode vollständig einsehbar; Modelle mit offener Lizenz (Parakeet CC-BY-4.0, Whisper MIT, Silero MIT).
 * Offen für die DSFA: Rollenkonzept, Protokollierung von Zugriffen (Audit-Log), Backup – siehe Roadmap.
 
@@ -125,10 +125,10 @@ Alle Einstellungen in `.env` (siehe `.env.example`). Wichtigste:
 |---|---|
 | `ASR_BACKEND` | `parakeet` (Standard) / `whisper` / `fake` |
 | `DEVICE` | `cpu` / `cuda` |
-| `VAD_MIN_SILENCE_MS` | Pause bis Satzende (700 ms; kleiner = schneller, mehr Satzbrüche) |
-| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Protokoll-KI (OpenAI-kompatibel), leer = nur NOVA-Zwischenablage |
-| `RETENTION_*_DAYS` | automatische Löschfristen |
-| `BASIC_AUTH_USER/PASSWORD` | einfacher Zugriffsschutz im Pilot |
+| `VAD_MIN_SILENCE_MS` | Pause bis Satzende (550 ms; kleiner = schneller, mehr Satzbrüche) |
+| `LLM_BASE_URL`, `LLM_MODEL`, `LLM_API_KEY` | Sprachmodell für Bereinigen/Zusammenfassen (OpenAI-kompatibel; auf dem Server automatisch gesetzt) |
+| `RETENTION_*_HOURS` | automatische Löschfristen (0 = aus) |
+| `ACCESS_PASSWORD` | Zugangspasswort (auf einem Server Pflicht) |
 
 ## 8. Tests
 
@@ -144,7 +144,7 @@ pytest -q
 * Sprache Deutsch; ein Mikrofon pro Sitzung (Konferenzmikrofon empfohlen – im lauten Raum ist das Mikrofon der größte Hebel, nicht das Modell).
 * Sprechererkennung ist automatisch (nach dem Stopp); sehr ähnliche Stimmen können zusammenfallen – Namen per Klick korrigierbar.
 * Handy: Aufnahme im Browser funktioniert über HTTPS; ohne VPN/Intranet-Zugriff bleibt „aufnehmen und später hochladen“.
-* Die Modell-IDs auf Hugging Face (`istupakov/parakeet-tdt-0.6b-v3-onnx`, `cstr/whisper-large-v3-turbo-german-int8_float32`) wurden nicht aus dieser Entwicklungsumgebung heraus geladen (kein Internet) – beim ersten Start prüfen; Alternative für Whisper: `Systran/faster-whisper-large-v3-turbo` (nicht deutsch-feingetunt).
+* Parakeet und die Sprechererkennung werden von GitHub-Releases (sherpa-onnx) geladen und sind getestet; das optionale Whisper-Modell (`cstr/whisper-large-v3-turbo-german-int8_float32`) kommt von Hugging Face und ist noch ungetestet.
 
 **Roadmap**
 * Stufe 2: automatische Sprecherzuordnung, SSO, Audit-Log, Teams-Aufzeichnungs-Import, TOP-Vorlagen/Word-Vorlage der Stadt, Löschprotokoll
