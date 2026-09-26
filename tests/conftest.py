@@ -23,6 +23,8 @@ def app_env(tmp_path_factory):
     os.environ["MITSCHRIFT_ENV_FILE"] = str(data / "nonexistent.env")
     os.environ["LIVE_FINAL_PASS"] = "1"
     os.environ["VAD_MIN_SILENCE_MS"] = "600"
+    os.environ["DIARIZATION"] = "0"
+    os.environ["LIVE_PARTIALS"] = "1"
     return data
 
 
@@ -32,5 +34,10 @@ def client(app_env):
 
     from app.main import app
 
+    import time
     with TestClient(app) as c:
+        for _ in range(100):
+            if c.get("/api/health").json().get("ready"):
+                break
+            time.sleep(0.05)
         yield c

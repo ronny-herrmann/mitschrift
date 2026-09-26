@@ -11,6 +11,7 @@ import queue
 import threading
 from pathlib import Path
 
+from . import bereinigung
 from .audio import decode_to_pcm16k
 from .config import Settings
 from .pipeline import Transcriber
@@ -20,10 +21,13 @@ log = logging.getLogger(__name__)
 
 
 class JobQueue:
-    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings):
+    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, llm_factory=None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
+        self.llm_factory = llm_factory
+        self._diarizer = None
+        self._diarizer_failed = False
         self._q: queue.Queue[str] = queue.Queue()
         self._progress: dict[str, tuple[int, int]] = {}
         self._thread = threading.Thread(target=self._run, name="jobs", daemon=True)
@@ -82,10 +86,21 @@ class JobQueue:
 
         segments, secs = self.transcriber.transcribe_audio(audio, prog)
 
-        # Manuell vergebene Sprechernamen aus der Live-Fassung übernehmen (nach Zeit-Überlappung)
+        # Sprechererkennung
+        if self.settings.diarization and segments:
+            self._progress[tid] = (-1, 0)  # Anzeige: „Sprecher werden erkannt“
+            diar = self._get_diarizer()
+            if diar is not None:
+                try:
+                    from .diarize import assign_speakers
+                    segments = assign_speakers(segments, diar.turns(audio))
+                except Exception:
+                    log.exception("Sprechererkennung fehlgeschlagen – weiter ohne")
+
+        # Manuell vergebene Namen aus der Live-Fassung übernehmen (nach Zeit-Überlappung)
         if refine:
             old = self.store.get_transcript(tid)
-            named = [s for s in (old.segments if old else []) if s.speaker]
+            named = [s for s in (old.segments if old else []) if s.speaker and not s.speaker.startswith("Sprecher ")]
             for seg in segments:
                 best, overlap = "", 0.0
                 for o in named:
@@ -94,6 +109,21 @@ class JobQueue:
                         best, overlap = o.speaker, ov
                 if best:
                     seg.speaker = best
+
+        # KI-Bereinigung (falls eine KI angebunden ist)
+        llm = self.llm_factory() if self.llm_factory else None
+        if llm is not None and segments:
+            self._progress[tid] = (-2, 0)  # Anzeige: „KI bereinigt“
+            try:
+                cleaned = bereinigung.clean_segments(llm, segments, self.transcriber.glossar_entries())
+                changes, _, _ = bereinigung.apply_cleaned(segments, cleaned)
+                by_idx = {c["idx"]: c for c in changes}
+                for seg in segments:
+                    c = by_idx.get(seg.idx)
+                    if c:
+                        seg.clean, seg.clean_note = (c["clean"], "") if c["ok"] else ("", c["grund"])
+            except Exception:
+                log.exception("KI-Bereinigung fehlgeschlagen – Transkript bleibt unbereinigt")
 
         self.store.replace_segments(tid, segments)
         model = self.transcriber.final_backend.info().get("model", "")
@@ -105,4 +135,15 @@ class JobQueue:
         self.store.update_transcript(tid, **fields)
         if self.settings.audio_delete_after_done:
             self.store.delete_audio(tid)
+
+    def _get_diarizer(self):
+        if self._diarizer is None and not self._diarizer_failed:
+            try:
+                from .diarize import Diarizer
+                s = self.settings
+                self._diarizer = Diarizer(s.models_dir, s.diarization_threshold, s.diarization_speakers)
+            except Exception:
+                self._diarizer_failed = True
+                log.exception("Sprechererkennung nicht verfügbar")
+        return self._diarizer
         log.info("Fertig: %s – %.1fs Audio in %.1fs (%.0f× Echtzeit)", tid, duration, secs, duration / max(secs, 0.01))

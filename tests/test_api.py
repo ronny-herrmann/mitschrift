@@ -184,3 +184,25 @@ def test_login_required_when_password_set(client, monkeypatch):
         with client.websocket_connect("/ws/live") as ws:
             ws.receive_json()
     auth._failures.clear()
+
+
+def test_bereinigen_import_and_discard(client):
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}).json()["id"]
+    d = wait_done(client, tid)
+    prompt = client.get(f"/api/transcripts/{tid}/bereinigen-prompt").text
+    assert "[S0]" in prompt and "Verboten" in prompt
+    assert client.post(f"/api/transcripts/{tid}/bereinigen").status_code == 409  # keine KI angebunden
+    orig = d["segments"][0]["text"]
+    r = client.post(f"/api/transcripts/{tid}/bereinigen/import",
+                    json={"text": f"[S0] {orig.strip('[]')}.\n[S1] Der Bürgermeister hat heute 5 Millionen Euro für das neue Rathaus beschlossen."})
+    assert r.status_code == 200, r.text
+    res = r.json()
+    assert res["uebernommen"] == 1 and res["verworfen"] == 1
+    d = client.get(f"/api/transcripts/{tid}").json()
+    assert d["segments"][0]["clean"] and not d["segments"][1]["clean"] and d["segments"][1]["clean_note"]
+    txt = client.get(f"/api/transcripts/{tid}/export?format=txt").text
+    assert d["segments"][0]["clean"] in txt
+    client.delete(f"/api/transcripts/{tid}/bereinigen")
+    assert not client.get(f"/api/transcripts/{tid}").json()["segments"][0]["clean"]
+    client.delete(f"/api/transcripts/{tid}")

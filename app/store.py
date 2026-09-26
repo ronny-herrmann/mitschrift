@@ -31,6 +31,8 @@ class Segment:
     text: str
     speaker: str = ""
     words: list[dict] = field(default_factory=list)  # [{"w":..., "s":..., "e":...}]
+    clean: str = ""       # KI-bereinigter Text (leer = nicht bereinigt)
+    clean_note: str = ""  # Grund, falls die Bereinigung verworfen wurde
 
 
 @dataclass
@@ -57,7 +59,7 @@ class Transcript:
 
     @property
     def text(self) -> str:
-        return "\n".join(s.text for s in self.segments if s.text)
+        return "\n".join((s.clean or s.text) for s in self.segments if s.text)
 
 
 SCHEMA = """
@@ -82,6 +84,8 @@ CREATE TABLE IF NOT EXISTS segments (
     text TEXT NOT NULL,
     speaker TEXT DEFAULT '',
     words TEXT DEFAULT '[]',
+    clean TEXT DEFAULT '',
+    clean_note TEXT DEFAULT '',
     PRIMARY KEY (transcript_id, idx)
 );
 CREATE TABLE IF NOT EXISTS protokolle (
@@ -110,6 +114,10 @@ class Store:
         self._conn.execute("PRAGMA foreign_keys=ON")
         with self._tx() as c:
             c.executescript(SCHEMA)
+            cols = {r[1] for r in c.execute("PRAGMA table_info(segments)").fetchall()}
+            for col in ("clean", "clean_note"):
+                if col not in cols:
+                    c.execute(f"ALTER TABLE segments ADD COLUMN {col} TEXT DEFAULT ''")
 
     @contextmanager
     def _tx(self):
@@ -144,15 +152,18 @@ class Store:
         with self._tx() as c:
             c.execute("DELETE FROM segments WHERE transcript_id=?", (tid,))
             c.executemany(
-                "INSERT INTO segments (transcript_id,idx,start,end,text,speaker,words) VALUES (?,?,?,?,?,?,?)",
-                [(tid, s.idx, s.start, s.end, s.text, s.speaker, json.dumps(s.words, ensure_ascii=False)) for s in segments],
+                "INSERT INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note) VALUES (?,?,?,?,?,?,?,?,?)",
+                [(tid, s.idx, s.start, s.end, s.text, s.speaker, json.dumps(s.words, ensure_ascii=False), s.clean,
+                  s.clean_note) for s in segments],
             )
 
     def append_segment(self, tid: str, seg: Segment) -> None:
         with self._tx() as c:
             c.execute(
-                "INSERT OR REPLACE INTO segments (transcript_id,idx,start,end,text,speaker,words) VALUES (?,?,?,?,?,?,?)",
-                (tid, seg.idx, seg.start, seg.end, seg.text, seg.speaker, json.dumps(seg.words, ensure_ascii=False)),
+                "INSERT OR REPLACE INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note)"
+                " VALUES (?,?,?,?,?,?,?,?,?)",
+                (tid, seg.idx, seg.start, seg.end, seg.text, seg.speaker, json.dumps(seg.words, ensure_ascii=False),
+                 seg.clean, seg.clean_note),
             )
 
     def update_segment(self, tid: str, idx: int, **fields) -> bool:
@@ -181,7 +192,7 @@ class Store:
         t = self._row_to_transcript(row)
         t.segments = [
             Segment(idx=s["idx"], start=s["start"], end=s["end"], text=s["text"], speaker=s["speaker"] or "",
-                    words=json.loads(s["words"] or "[]"))
+                    words=json.loads(s["words"] or "[]"), clean=s["clean"] or "", clean_note=s["clean_note"] or "")
             for s in segs
         ]
         return t

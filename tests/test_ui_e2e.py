@@ -31,7 +31,8 @@ def server(tmp_path_factory):
     data = tmp_path_factory.mktemp("e2e")
     port = _free_port()
     env = {**os.environ, "ASR_BACKEND": "fake", "DATA_DIR": str(data), "MODELS_DIR": str(data / "models"),
-           "MITSCHRIFT_ENV_FILE": str(data / "none.env"), "VAD_MIN_SILENCE_MS": "600", "PORT": str(port)}
+           "MITSCHRIFT_ENV_FILE": str(data / "none.env"), "VAD_MIN_SILENCE_MS": "600", "PORT": str(port),
+           "DIARIZATION": "0"}
     proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
                             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     url = f"http://127.0.0.1:{port}"
@@ -71,65 +72,64 @@ def page(server):
 
 def test_live_recording_in_browser(page, server):
     page.goto(server + "/#/aufnahme")
-    page.wait_for_selector("#rec-btn")
-    page.fill("#rec-title", "E2E Live")
-    assert page.is_disabled("#rec-btn")
-    page.check("#rec-consent")
-    page.click("#rec-btn")
-    # Fake-Mikrofon spielt die Datei (12 s) in Schleife → nach ~9 s müssen Segmente da sein
-    page.wait_for_selector("#rec-live .seg", timeout=20_000)
-    time.sleep(6)
-    n = page.locator("#rec-live .seg").count()
-    assert n >= 2, f"nur {n} Live-Segmente"
-    assert "ms" in page.inner_text("#rec-live .seg .ms")
-    page.click("#rec-btn")  # Stopp
-    page.wait_for_selector("#rec-final:not(.hidden)", timeout=30_000)
-    info = page.inner_text("#rec-final-info")
-    assert "Segmente" in info
-    page.click("#rec-final-link")
-    page.wait_for_selector(".segrow")
-    assert page.locator(".segrow").count() >= 2
-    assert page.locator("#d-audio").count() == 1
+    page.wait_for_selector("#r-start")
+    page.wait_for_function("document.querySelector('#sys').classList.contains('ok')", timeout=20_000)
+    page.fill("#r-title", "E2E Live")
+    assert page.is_disabled("#r-start")
+    page.check("#r-consent")
+    page.click("#r-start")
+    page.wait_for_selector("#r-text .fin", timeout=20_000)
+    page.wait_for_timeout(5000)
+    assert page.locator("#r-text .fin").count() >= 2
+    page.click("#r-stop")
+    page.wait_for_selector(".done-card", timeout=30_000)
+    page.click(".done-card .btn.primary")
+    page.wait_for_selector(".block")
+    assert page.locator(".seg").count() >= 2
+    assert page.locator("#audio").count() == 1
     assert not [e for e in page.errors if "favicon" not in e], page.errors
 
 
-def test_upload_list_detail_protokoll(page, server):
+def test_upload_detail_edit_and_summary_import(page, server):
     page.goto(server + "/#/hochladen")
     page.set_input_files("#file", str(FIXTURES / "drei_saetze_de.wav"))
-    page.wait_for_selector(".job .badge.ok", timeout=30_000)
-    page.click(".job .badge.ok a")
-    page.wait_for_selector(".segrow")
-    assert page.locator(".segrow").count() == 3
+    page.wait_for_selector(".job .chip.ok", timeout=30_000)
+    page.click(".job .chip.ok a")
+    page.wait_for_selector(".seg")
+    assert page.locator(".seg").count() == 3
 
-    # Segment bearbeiten
-    seg = page.locator(".segrow .txt").first
+    seg = page.locator(".seg .txt").first
     seg.click()
     page.keyboard.press("Control+A")
     page.keyboard.type("Korrigiert per UI")
-    page.locator("#d-title").click()  # blur → speichert
+    page.keyboard.press("Enter")
     page.wait_for_timeout(500)
     page.reload()
-    page.wait_for_selector(".segrow")
-    assert page.inner_text(".segrow .txt >> nth=0").strip() == "Korrigiert per UI"
+    page.wait_for_selector(".seg")
+    assert page.inner_text(".seg .txt >> nth=0").strip() == "Korrigiert per UI"
 
-    # Sprecher umbenennen (Prompt-Dialog)
     page.once("dialog", lambda d: d.accept("Frau Müller"))
-    page.locator(".segrow .spk").first.click()
+    page.locator(".bname").first.click()
     page.wait_for_selector("text=Frau Müller")
 
-    # Protokoll importieren und prüfen
-    page.click("button[data-tab=protokoll]")
-    page.click("#p-import")
-    page.fill("#p-paste", "## Ergebnisse\n- Sitzung eröffnet. [S0]\n- Ohne Beleg.\n## Beschlüsse\nkeine")
-    page.click("#p-paste-ok")
-    page.wait_for_selector(".prot")
-    assert page.locator(".prot .pl.ok").count() == 1
+    # Zusammenfassen ohne KI → NOVA-Dialog
+    page.click("#ai-sum")
+    page.wait_for_selector("#m-in")
+    page.fill("#m-in", "## Ergebnisse\n- Sitzung eröffnet. [S0]\n- Ohne Beleg.\n## Beschlüsse\nkeine")
+    page.click("#m-ok")
+    page.wait_for_selector(".prot .pl")
     assert page.locator(".prot .pl.unbelegt").count() == 1
-    assert "50 %" in page.inner_text(".stat")
-    page.click(".prot .ref")  # springt ins Transkript
-    page.wait_for_selector(".segrow.active")
+    assert "50 % belegt" in page.inner_text(".pstats")
+    page.click(".prot .ref")
 
-    # Liste
+    # Bereinigen ohne KI → NOVA-Dialog, Import mit Treue-Prüfung
+    page.click("#ai-clean")
+    page.wait_for_selector("#m-in")
+    page.fill("#m-in", "[S0] Korrigiert per UI.\n[S1] Der Stadtrat hat 12 Millionen für ein neues Stadion beschlossen und alles vertagt.")
+    page.click("#m-ok")
+    page.wait_for_selector(".seg .mk.warn")
+    assert page.locator("[data-view=clean]").count() == 1
+
     page.goto(server + "/#/transkripte")
     page.wait_for_selector(".item")
     assert page.locator(".item").count() >= 2

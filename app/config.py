@@ -80,9 +80,14 @@ class Settings:
     # --- Sprachaktivitätserkennung (VAD) für die Live-Segmentierung --------
     vad_threshold: float = field(default_factory=lambda: _env_float("VAD_THRESHOLD", 0.5))
     # Pause in ms, nach der ein Satz als abgeschlossen gilt und transkribiert wird
-    vad_min_silence_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SILENCE_MS", 700))
+    vad_min_silence_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SILENCE_MS", 550))
     # Segment wird spätestens nach so vielen Sekunden geschnitten
-    vad_max_segment_s: float = field(default_factory=lambda: _env_float("VAD_MAX_SEGMENT_S", 15.0))
+    vad_max_segment_s: float = field(default_factory=lambda: _env_float("VAD_MAX_SEGMENT_S", 12.0))
+    # Grauer Zwischentext während des Sprechens (alle n Sekunden aktualisiert)
+    live_partials: bool = field(default_factory=lambda: _env_bool("LIVE_PARTIALS", True))
+    live_partial_interval_s: float = field(default_factory=lambda: _env_float("LIVE_PARTIAL_INTERVAL_S", 1.0))
+    # KI-Bereinigung jedes fertigen Satzes schon während der Aufnahme (nur mit LLM_*)
+    live_ai_clean: bool = field(default_factory=lambda: _env_bool("LIVE_AI_CLEAN", True))
     vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
     vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))
 
@@ -92,6 +97,12 @@ class Settings:
 
     # Nach Ende einer Live-Aufnahme: Verfeinerung über die ganze Datei (läuft im Hintergrund)
     live_final_pass: bool = field(default_factory=lambda: _env_bool("LIVE_FINAL_PASS", True))
+
+    # Sprechererkennung im genauen Durchlauf (pyannote-Segmentierung + 3D-Speaker, sherpa-onnx)
+    diarization: bool = field(default_factory=lambda: _env_bool("DIARIZATION", True))
+    diarization_threshold: float = field(default_factory=lambda: _env_float("DIARIZATION_THRESHOLD", 0.7))
+    # Feste Sprecherzahl, falls bekannt (0 = automatisch)
+    diarization_speakers: int = field(default_factory=lambda: _env_int("DIARIZATION_SPEAKERS", 0))
 
     # --- Protokoll-KI (optional, OpenAI-kompatibel: Ollama, vLLM, NOVA/BotBucket …) ----
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", ""))

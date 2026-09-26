@@ -4,117 +4,46 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0069FF">
-  <title>Mitschrift – Transkription &amp; Protokoll</title>
+  <title>Mitschrift</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <a class="brand" href="#/aufnahme" aria-label="Mitschrift Startseite">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-        <rect x="2" y="2" width="28" height="28" rx="8" fill="#0069FF"/>
-        <rect x="9" y="11" width="3" height="10" rx="1.5" fill="#fff"/>
-        <rect x="14.5" y="7" width="3" height="18" rx="1.5" fill="#fff"/>
-        <rect x="20" y="13" width="3" height="6" rx="1.5" fill="#fff"/>
-      </svg>
-      <span class="brand-name">Mitschrift</span>
-      <span class="brand-sub">Pilot · lokal &amp; offline</span>
-    </a>
-    <nav class="nav" aria-label="Hauptnavigation">
-      <a href="#/aufnahme" data-nav="aufnahme"><span class="nav-ico">●</span>Aufnahme</a>
-      <a href="#/hochladen" data-nav="hochladen"><span class="nav-ico">↑</span>Hochladen</a>
-      <a href="#/transkripte" data-nav="transkripte"><span class="nav-ico">≡</span>Transkripte</a>
-      <a href="#/glossar" data-nav="glossar"><span class="nav-ico">Aa</span>Glossar</a>
-    </nav>
-    <div class="sysinfo" id="sysinfo" title="Modell und Status">…</div>
-  </header>
+  <div class="shell">
+    <!-- Seitenleiste (Desktop) -->
+    <aside class="side" id="side">
+      <a class="brand" href="#/aufnahme">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="9" fill="#0069FF"/><rect x="8.5" y="11" width="3" height="10" rx="1.5" fill="#fff"/><rect x="14.5" y="6.5" width="3" height="19" rx="1.5" fill="#fff"/><rect x="20.5" y="12.5" width="3" height="7" rx="1.5" fill="#fff"/></svg>
+        <span>Mitschrift</span>
+      </a>
+      <a class="side-cta" href="#/aufnahme"><span class="dot-rec"></span>Neue Aufnahme</a>
+      <a class="side-link" href="#/hochladen" data-nav="hochladen"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Datei hochladen</a>
+      <div class="side-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="side-q" type="search" placeholder="Aufnahmen durchsuchen"></div>
+      <div class="side-list" id="side-list"></div>
+      <div class="side-foot">
+        <a class="side-link" href="#/glossar" data-nav="glossar"><svg viewBox="0 0 24 24"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/><path d="M8 9h6M8 13h4"/></svg>Glossar</a>
+        <div class="sys" id="sys"><span class="sys-dot"></span><span id="sys-txt">Verbinde …</span></div>
+      </div>
+    </aside>
 
-  <main id="view" class="view" aria-live="polite"></main>
+    <main class="main">
+      <div class="banner hidden" id="banner"></div>
+      <div id="view" class="view"></div>
+    </main>
+  </div>
 
+  <!-- Navigation (Handy) -->
+  <nav class="tabbar" aria-label="Navigation">
+    <a href="#/aufnahme" data-nav="aufnahme"><span class="tab-rec"></span>Aufnahme</a>
+    <a href="#/hochladen" data-nav="hochladen"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Hochladen</a>
+    <a href="#/transkripte" data-nav="transkripte"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Verlauf</a>
+    <a href="#/glossar" data-nav="glossar"><svg viewBox="0 0 24 24"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/></svg>Glossar</a>
+  </nav>
+
+  <div class="modal hidden" id="modal" role="dialog" aria-modal="true"><div class="modal-card" id="modal-card"></div></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-
-  <!-- Vorlagen -->
-  <template id="tpl-aufnahme">
-    <section class="card rec">
-      <h1>Live-Aufnahme</h1>
-      <p class="lead">Aufnehmen, Text erscheint satzweise nach 1–3 Sekunden. Nach dem Stopp läuft ein zweiter Durchlauf mit vollem Kontext.</p>
-      <div class="row">
-        <label class="field grow">
-          <span>Titel</span>
-          <input id="rec-title" type="text" placeholder="z. B. Dienstbesprechung 10.5 – 26.09.2026" autocomplete="off">
-        </label>
-        <label class="field">
-          <span>Mikrofon</span>
-          <select id="rec-mic"><option value="">Standard</option></select>
-        </label>
-      </div>
-      <label class="consent">
-        <input type="checkbox" id="rec-consent">
-        <span>Alle Teilnehmenden wurden über die Aufzeichnung und Transkription informiert.</span>
-      </label>
-      <div class="rec-controls">
-        <button id="rec-btn" class="rec-btn" disabled aria-label="Aufnahme starten">
-          <span class="rec-dot"></span>
-        </button>
-        <div class="rec-meta">
-          <div class="rec-timer" id="rec-timer">00:00</div>
-          <div class="rec-status" id="rec-status">Bereit</div>
-          <div class="level"><div class="level-bar" id="rec-level"></div></div>
-        </div>
-      </div>
-      <div id="rec-live" class="live"></div>
-      <div id="rec-final" class="hidden final">
-        <p><strong>Aufnahme abgeschlossen.</strong> <span id="rec-final-info"></span></p>
-        <a id="rec-final-link" class="btn primary" href="#">Transkript öffnen</a>
-      </div>
-    </section>
-  </template>
-
-  <template id="tpl-hochladen">
-    <section class="card">
-      <h1>Datei hochladen</h1>
-      <p class="lead">Aufnahmen vom Diktiergerät, Handy oder aus Teams (mp3, m4a, wav, mp4, webm …). Die Datei bleibt auf diesem Server.</p>
-      <div id="drop" class="drop" tabindex="0" role="button" aria-label="Datei auswählen oder hierher ziehen">
-        <input id="file" type="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.mp4,.webm,.ogg,.opus,.flac,.aac,.wma,.mkv,.mov" multiple hidden>
-        <div class="drop-ico">↑</div>
-        <div><strong>Datei hierher ziehen</strong> oder klicken zum Auswählen</div>
-        <div class="muted">Mehrere Dateien möglich · werden nacheinander verarbeitet</div>
-      </div>
-      <label class="field">
-        <span>Titel (optional, sonst Dateiname)</span>
-        <input id="up-title" type="text" placeholder="z. B. Ausschuss Digitales – Sitzung 3">
-      </label>
-      <div id="up-jobs" class="jobs"></div>
-    </section>
-  </template>
-
-  <template id="tpl-transkripte">
-    <section class="card">
-      <div class="row between">
-        <h1>Transkripte</h1>
-        <input id="tl-search" type="search" placeholder="Suchen …" aria-label="Transkripte durchsuchen">
-      </div>
-      <div id="tl-list" class="list"></div>
-    </section>
-  </template>
-
-  <template id="tpl-glossar">
-    <section class="card">
-      <h1>Glossar</h1>
-      <p class="lead">Bekannte Begriffe, die das Modell falsch schreibt, werden nach der Erkennung automatisch ersetzt – z. B. Ämter, Gremien, Ortsteile, Namen.</p>
-      <table class="glossar">
-        <thead><tr><th>Erkannt als</th><th>Richtig</th><th></th></tr></thead>
-        <tbody id="gl-body"></tbody>
-      </table>
-      <div class="row">
-        <button class="btn" id="gl-add">+ Eintrag</button>
-        <button class="btn primary" id="gl-save">Speichern</button>
-      </div>
-    </section>
-  </template>
-
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -29,7 +29,7 @@ def _line(seg, with_time: bool, with_speaker: bool) -> str:
         parts.append(f"[{fmt_time(seg.start)}]")
     if with_speaker and seg.speaker:
         parts.append(f"{seg.speaker}:")
-    parts.append(seg.text)
+    parts.append(seg.clean or seg.text)
     return " ".join(parts)
 
 
@@ -42,14 +42,15 @@ def to_markdown(t: Transcript) -> str:
     created = datetime.fromisoformat(t.created_at).strftime("%d.%m.%Y %H:%M") if t.created_at else ""
     out = [f"# {t.title}", "", f"Aufgenommen: {created} · Dauer: {fmt_time(t.duration)} · Modell: {t.model}", ""]
     for s in t.segments:
-        out.append(f"- **{fmt_time(s.start)}** {('*' + s.speaker + ':* ') if s.speaker else ''}{s.text}")
+        out.append(f"- **{fmt_time(s.start)}** {('*' + s.speaker + ':* ') if s.speaker else ''}{s.clean or s.text}")
     return "\n".join(out) + "\n"
 
 
 def to_srt(t: Transcript) -> str:
     out = []
     for i, s in enumerate(t.segments, 1):
-        text = f"{s.speaker}: {s.text}" if s.speaker else s.text
+        body = s.clean or s.text
+        text = f"{s.speaker}: {body}" if s.speaker else body
         out += [str(i), f"{_fmt_srt(s.start)} --> {_fmt_srt(s.end)}", text, ""]
     return "\n".join(out)
 
@@ -93,7 +94,7 @@ def to_docx(t: Transcript, protokoll_md: str | None = None) -> bytes:
         if s.speaker:
             r2 = p.add_run(f"{s.speaker}: ")
             r2.bold = True
-        p.add_run(s.text)
+        p.add_run(s.clean or s.text)
 
     buf = io.BytesIO()
     doc.save(buf)

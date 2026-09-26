@@ -28,11 +28,17 @@ from .store import Transcript
 log = logging.getLogger(__name__)
 
 STYLES = {
+    "zusammenfassung": "Zusammenfassung",
     "ergebnis": "Ergebnisprotokoll",
     "verlauf": "Verlaufsprotokoll",
 }
 
 STYLE_RULES = {
+    "zusammenfassung": (
+        "Form: strukturierte Zusammenfassung für Leser mit wenig Zeit. Gliederung: 1) Worum ging es (2–3 Sätze), "
+        "2) Kernaussagen als Stichpunkte, 3) Entscheidungen, 4) Aufgaben (wer, was, bis wann – nur wenn genannt), "
+        "5) Offene Fragen. Knapp, keine Wiederholungen."
+    ),
     "ergebnis": (
         "Form: Ergebnisprotokoll. Gliederung: 1) Teilnehmende/Sprecher (nur falls erkennbar), "
         "2) Tagesordnungspunkte bzw. Themen in der Reihenfolge des Gesprächs, je Thema die "
@@ -59,13 +65,13 @@ def transcript_for_prompt(t: Transcript) -> str:
     lines = []
     for s in t.segments:
         sp = f" | {s.speaker}" if s.speaker else ""
-        lines.append(f"[S{s.idx} | {fmt_time(s.start)}{sp}] {s.text}")
+        lines.append(f"[S{s.idx} | {fmt_time(s.start)}{sp}] {s.clean or s.text}")
     return "\n".join(lines)
 
 
 def build_prompt(t: Transcript, style: str = "ergebnis") -> str:
     """Vollständiger Prompt für NOVA (oder jede andere KI) per Zwischenablage."""
-    style = style if style in STYLES else "ergebnis"
+    style = style if style in STYLES else "zusammenfassung"
     return (
         f"Erstelle aus dem folgenden Transkript ein {STYLES[style]}.\n\n"
         f"{STYLE_RULES[style]}\n\n{BASE_RULES}\n\n"
@@ -228,7 +234,7 @@ BAUSTEINE (JSON):
 
 def create_protokoll(t: Transcript, style: str, llm: LLMClient) -> dict:
     """Zweistufige, belegte Protokollerstellung über eine OpenAI-kompatible API."""
-    style = style if style in STYLES else "ergebnis"
+    style = style if style in STYLES else "zusammenfassung"
     transkript = transcript_for_prompt(t)
     seg_by_idx = {s.idx: s for s in t.segments}
 
@@ -243,7 +249,8 @@ def create_protokoll(t: Transcript, style: str, llm: LLMClient) -> dict:
         except (TypeError, ValueError):
             seg_idx = -1
         seg = seg_by_idx.get(seg_idx)
-        score = check_quote(str(b.get("zitat") or ""), seg.text) if seg else 0.0
+        zitat = str(b.get("zitat") or "")
+        score = max(check_quote(zitat, seg.text), check_quote(zitat, seg.clean)) if seg else 0.0
         b["segment"] = seg_idx
         b["zitat_score"] = score
         b["beleg_ok"] = bool(seg) and score >= 0.6

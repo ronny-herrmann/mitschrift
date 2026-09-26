@@ -11,7 +11,9 @@ Browser-Cache, keine 9 Minuten für 1 Minute Audio, keine Freezes – und jeder 
 |---|---|
 | Spracherkennung | NVIDIA Parakeet TDT 0.6B v3 (int8, 25 Sprachen, sehr schnell auf CPU) **oder** whisper-large-v3-turbo-german (faster-whisper) – per Konfiguration umschaltbar |
 | Satz-Erkennung | Silero VAD (ONNX, im Repo enthalten, kein Download) |
-| Live | Text erscheint satzweise 1–3 s nach dem Satz; nach dem Stopp zweiter Durchlauf über die ganze Aufnahme |
+| Live | grauer Zwischentext nach ~2 s, fester Satz nach Sprechpause, optional KI-Bereinigung je Satz; Wellenform läuft mit |
+| Nach dem Stopp | Ergebnis sofort gespeichert; im Hintergrund: genauer Durchlauf, Sprechererkennung (pyannote + 3D-Speaker), KI-Bereinigung |
+| KI-Knöpfe | „Text bereinigen“ (korrigiert nur, Treue-Prüfung je Satz) und „Zusammenfassen & strukturieren“ (Belegpflicht) – mit API direkt, ohne API über NOVA |
 | Upload | mp3, m4a, wav, mp4, webm, ogg … (ffmpeg), Warteschlange |
 | Protokoll | Belegpflicht: jede Aussage trägt `[S12]` = Segmentnummer; Prüf-Durchlauf markiert Unbelegtes; Klick springt zur Audiostelle |
 | KI-Anbindung | Weg 1: Prompt in NOVA einfügen, Antwort zurück einfügen & prüfen · Weg 2: OpenAI-kompatible API (Ollama, vLLM, NOVA sobald verfügbar) |
@@ -94,7 +96,9 @@ Code-Übersicht:
 | `app/export.py` | TXT/MD/SRT/DOCX |
 | `app/static/` | Oberfläche (reines HTML/JS/CSS, keine externen Dienste, PWA) |
 | `bench/` | Bake-off-Skript und Text-Normalisierung |
-| `tests/` | 18 Tests inkl. Browser-Ende-zu-Ende (Playwright, Fake-Mikrofon) |
+| `app/bereinigung.py` | KI-Bereinigung mit Treue-Prüfung (Wort- und Buchstabenvergleich, erfundene Zahlen) |
+| `app/diarize.py` | Sprechererkennung, Teilung von Segmenten an Wortgrenzen |
+| `tests/` | 23 Tests inkl. Browser-Ende-zu-Ende (Playwright, Fake-Mikrofon) |
 
 ## 5. Protokoll mit Belegpflicht – warum so
 
@@ -144,7 +148,7 @@ pytest -q
 
 **Annahmen im Prototyp**
 * Sprache Deutsch; ein Mikrofon pro Sitzung (Konferenzmikrofon empfohlen – im lauten Raum ist das Mikrofon der größte Hebel, nicht das Modell).
-* Sprecherzuordnung erfolgt im Pilot manuell (Klick auf „Sprecher?“); automatische Diarisierung folgt (pyannote / NVIDIA Sortformer).
+* Sprechererkennung ist automatisch (nach dem Stopp); sehr ähnliche Stimmen können zusammenfallen – Namen per Klick korrigierbar.
 * Handy: Aufnahme im Browser funktioniert über HTTPS; ohne VPN/Intranet-Zugriff bleibt „aufnehmen und später hochladen“.
 * Die Modell-IDs auf Hugging Face (`istupakov/parakeet-tdt-0.6b-v3-onnx`, `cstr/whisper-large-v3-turbo-german-int8_float32`) wurden nicht aus dieser Entwicklungsumgebung heraus geladen (kein Internet) – beim ersten Start prüfen; Alternative für Whisper: `Systran/faster-whisper-large-v3-turbo` (nicht deutsch-feingetunt).
 

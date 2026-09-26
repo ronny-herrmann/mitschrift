@@ -1,202 +1,320 @@
-/* Mitschrift – Web-Oberfläche (reines JavaScript, kein Build-Schritt, keine externen Abhängigkeiten). */
+/* Mitschrift – Oberfläche (reines JavaScript, kein Build-Schritt, keine externen Abhängigkeiten). */
 (() => {
   'use strict';
 
-  // ---------------------------------------------------------------- Hilfen
+  // ================================================================ Hilfen
   const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const view = $('#view');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fmt = (sec) => {
     sec = Math.max(0, Math.floor(sec || 0));
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
-    const mm = String(m).padStart(2, '0'), ss = String(s).padStart(2, '0');
-    return h ? `${String(h).padStart(2, '0')}:${mm}:${ss}` : `${mm}:${ss}`;
+    return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s).padStart(2, '0');
   };
-  const fmtDate = (iso) => {
-    try { return new Date(iso).toLocaleString('de-DE', { dateStyle: 'medium', timeStyle: 'short' }); } catch { return iso; }
-  };
-  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const fmtDur = (sec) => { sec = Math.round(sec || 0); if (sec < 60) return sec + ' s'; const m = Math.round(sec / 60); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
+  const fmtDate = (iso, opts = { dateStyle: 'medium', timeStyle: 'short' }) => { try { return new Date(iso).toLocaleString('de-DE', opts); } catch { return iso; } };
+  const COLORS = ['#0069FF', '#E5484D', '#16A34A', '#9333EA', '#EA580C', '#0891B2', '#DB2777', '#65A30D'];
+  const initials = (name) => { const m = /^Sprecher\s+(\d+)/i.exec(name || ''); return m ? 'S' + m[1] : (name || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase(); };
+
   let toastTimer;
   const toast = (msg, err = false) => {
-    const t = $('#toast');
-    t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
-    clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), err ? 6000 : 3000);
+    const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), err ? 6500 : 3200);
   };
   const api = async (path, opts = {}) => {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }, ...opts });
     if (r.status === 401) { location.href = '/login'; throw new Error('Bitte anmelden'); }
-    if (!r.ok) {
-      let msg = r.statusText;
-      try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch { }
-      throw new Error(msg);
-    }
+    if (!r.ok) { let msg = r.statusText; try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch { } const e = new Error(msg); e.status = r.status; throw e; }
     const ct = r.headers.get('content-type') || '';
     return ct.includes('application/json') ? r.json() : r.text();
   };
-  const tpl = (id) => document.importNode($('#' + id).content, true);
+  const modal = {
+    open(html) { $('#modal-card').innerHTML = html; $('#modal').classList.remove('hidden'); return $('#modal-card'); },
+    close() { $('#modal').classList.add('hidden'); $('#modal-card').innerHTML = ''; },
+  };
+  $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') modal.close(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { modal.close(); $$('.menu-list').forEach((m) => m.remove()); } });
+  const copy = async (text) => { try { await navigator.clipboard.writeText(text); return true; } catch { return false; } };
+  const ICON = {
+    spark: '<svg viewBox="0 0 24 24"><path d="M12 3l1.8 4.9L19 9.7l-4.9 1.8L12 16.4l-1.8-4.9L5.3 9.7l4.9-1.8z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>',
+    doc: '<svg viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h6"/></svg>',
+    more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>',
+    down: '<svg viewBox="0 0 24 24"><path d="M12 4v12m0 0-4-4m4 4 4-4M4 20h16"/></svg>',
+    check: '<svg viewBox="0 0 24 24"><path d="m5 12 5 5L20 7"/></svg>',
+    upload: '<svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>',
+  };
 
-  // ---------------------------------------------------------------- Systemstatus
-  let health = null;
+  // ================================================================ Systemstatus
+  let health = { ready: false, load_status: 'lädt' };
   async function loadHealth() {
     try {
       health = await api('/api/health');
-      const ms = health.models || {}, live = ms.live || health.model || {}, fin = ms.final || live;
-      const finTxt = fin.model && fin.model !== live.model ? ` · genau: ${esc(fin.model)}` : '';
-      $('#sysinfo').innerHTML = `<span class="dot"></span>live: ${esc(live.model || live.backend)}${finTxt}`;
-      $('#sysinfo').title = `Live: ${JSON.stringify(live)}\nGenau: ${JSON.stringify(fin)}\nStatus genaues Modell: ${ms.final_status || '-'}`;
-      if (health.auth && !$('#logout')) {
-        const lo = document.createElement('a'); lo.id = 'logout'; lo.href = '#'; lo.className = 'logout'; lo.textContent = 'Abmelden';
-        lo.addEventListener('click', async (e) => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; });
-        $('.topbar').appendChild(lo);
+      const sys = $('#sys'), txt = $('#sys-txt'), banner = $('#banner');
+      const live = (health.models && health.models.live) || health.model || {};
+      if (health.ready) {
+        sys.className = 'sys ok';
+        txt.textContent = `${live.model || live.backend || 'bereit'}${health.llm_configured ? ' · KI: ' + health.llm_model : ''}`;
+        sys.title = JSON.stringify(health.models || {}, null, 1);
+        banner.classList.add('hidden');
+      } else if (health.load_status === 'fehler') {
+        sys.className = 'sys err'; txt.textContent = 'Modellfehler';
+        banner.innerHTML = `Sprachmodell konnte nicht geladen werden: ${esc(health.load_error)}`; banner.classList.remove('hidden');
+      } else {
+        sys.className = 'sys loading'; txt.textContent = 'Sprachmodell lädt …';
+        banner.innerHTML = '<span class="spin"></span> Das Sprachmodell wird geladen – beim ersten Start bis zu 1–2 Minuten. Die Seite ist gleich einsatzbereit.';
+        banner.classList.remove('hidden');
       }
-      $('#sysinfo').classList.remove('err');
-    } catch (e) {
-      $('#sysinfo').innerHTML = `<span class="dot"></span>Server nicht erreichbar`;
-      $('#sysinfo').classList.add('err');
+      if (health.auth && !$('#logout')) {
+        const a = document.createElement('a'); a.id = 'logout'; a.href = '#'; a.textContent = 'Abmelden';
+        a.addEventListener('click', async (e) => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; });
+        $('#sys').appendChild(a);
+      }
+      document.dispatchEvent(new CustomEvent('health'));
+    } catch {
+      $('#sys').className = 'sys err'; $('#sys-txt').textContent = 'Server nicht erreichbar';
     }
+    setTimeout(loadHealth, health.ready ? 30000 : 2000);
   }
 
-  // ---------------------------------------------------------------- Router
+  // ================================================================ Seitenleiste
+  let sideItems = [];
+  async function loadSide() {
+    try { sideItems = await api('/api/transcripts'); } catch { return; }
+    drawSide();
+  }
+  function groupLabel(iso) {
+    const d = new Date(iso), now = new Date(), day = 86400000;
+    const diff = Math.floor((new Date(now.toDateString()) - new Date(d.toDateString())) / day);
+    return diff === 0 ? 'Heute' : diff === 1 ? 'Gestern' : diff < 7 ? 'Diese Woche' : 'Älter';
+  }
+  function drawSide() {
+    const q = ($('#side-q').value || '').trim().toLowerCase();
+    const cur = (location.hash.match(/#\/t\/(\w+)/) || [])[1];
+    const items = sideItems.filter((t) => !q || t.title.toLowerCase().includes(q));
+    let html = '', last = '';
+    for (const t of items) {
+      const g = groupLabel(t.created_at);
+      if (g !== last) { html += `<div class="side-group">${g}</div>`; last = g; }
+      html += `<a class="side-item ${t.id === cur ? 'active' : ''}" href="#/t/${t.id}"><div class="t1"><span class="stat-dot ${t.status}"></span>${esc(t.title)}</div><div class="t2">${fmtDate(t.created_at, { hour: '2-digit', minute: '2-digit' })} · ${fmtDur(t.duration)}${t.source === 'live' ? ' · live' : ''}</div></a>`;
+    }
+    $('#side-list').innerHTML = html || '<div class="side-group">Noch keine Aufnahmen</div>';
+  }
+  $('#side-q').addEventListener('input', drawSide);
+  setInterval(() => { if (sideItems.some((t) => t.status === 'processing' || t.status === 'refining')) loadSide(); }, 3000);
+
+  // ================================================================ Router
   const routes = { aufnahme: renderAufnahme, hochladen: renderHochladen, transkripte: renderListe, glossar: renderGlossar, t: renderDetail };
-  let cleanup = null;
+  let cleanup = null, recordingActive = false;
   async function route() {
+    if (recordingActive && !location.hash.startsWith('#/aufnahme')) {
+      if (!confirm('Die Aufnahme läuft noch. Wirklich verlassen? Die Aufnahme wird dann beendet und gespeichert.')) { history.back(); return; }
+    }
     if (cleanup) { try { cleanup(); } catch { } cleanup = null; }
     const hash = location.hash.replace(/^#\/?/, '') || 'aufnahme';
     const [name, arg] = hash.split('/');
-    document.querySelectorAll('.nav a').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
+    $$('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === name));
+    drawSide();
     view.innerHTML = '';
-    const fn = routes[name] || renderAufnahme;
-    try { cleanup = await fn(arg); } catch (e) { view.innerHTML = `<section class="card"><h1>Fehler</h1><p>${esc(e.message)}</p></section>`; }
+    window.scrollTo(0, 0);
+    try { cleanup = await (routes[name] || renderAufnahme)(arg); } catch (e) { view.innerHTML = `<div class="empty"><h2>Fehler</h2><p>${esc(e.message)}</p></div>`; }
   }
   window.addEventListener('hashchange', route);
 
   // ================================================================ Aufnahme
   async function renderAufnahme() {
-    view.appendChild(tpl('tpl-aufnahme'));
-    const btn = $('#rec-btn'), consent = $('#rec-consent'), status = $('#rec-status'), timer = $('#rec-timer');
-    const level = $('#rec-level'), live = $('#rec-live'), micSel = $('#rec-mic');
-    let ctx, node, stream, ws, t0, tick, recording = false, segCount = 0, sumMs = 0;
+    view.innerHTML = `
+      <section class="rec-setup" id="setup">
+        <h1>Neue Aufnahme</h1>
+        <p class="lead">Der Text erscheint, während gesprochen wird – grau vorläufig, schwarz sobald der Satz steht.</p>
+        <div class="rec-fields">
+          <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung 10.5" autocomplete="off"></label>
+          <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
+        </div>
+        <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden wurden über Aufzeichnung und Transkription informiert.</span></label>
+        <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
+        <div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div>
+        <div class="rec-tips">
+          <div><strong>Mikrofon nah dran</strong>Ein Konferenzmikrofon in der Tischmitte bringt mehr als jedes Modell.</div>
+          <div><strong>Alles bleibt im Haus</strong>Audio und Text werden nur auf diesem Server verarbeitet.</div>
+          <div><strong>Nach dem Stopp</strong>Genauer Durchlauf, Sprechererkennung und KI-Bereinigung laufen im Hintergrund.</div>
+        </div>
+      </section>
+      <section class="rec-live hidden" id="live">
+        <div class="rec-bar">
+          <div class="rec-state"><i></i><span>Aufnahme</span></div>
+          <div class="rec-time" id="r-time">00:00</div>
+          <canvas class="wave" id="r-wave"></canvas>
+          <button class="stop-btn" id="r-stop" aria-label="Aufnahme beenden" title="Aufnahme beenden"><span></span></button>
+        </div>
+        <div class="rec-sub"><span id="r-status">Hört zu …</span><span id="r-info"></span></div>
+        <div class="rec-title-live" id="r-title-live"></div>
+        <div class="live-text" id="r-text"><p class="live-empty caret">Sprechen Sie – der Text erscheint hier</p></div>
+      </section>`;
 
+    const startBtn = $('#r-start'), consent = $('#r-consent'), hint = $('#r-hint'), micSel = $('#r-mic');
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      status.textContent = 'Kein Mikrofonzugriff möglich – die Seite muss über HTTPS (oder localhost) geöffnet werden.';
+      hint.textContent = 'Kein Mikrofonzugriff möglich – die Seite muss über HTTPS (oder localhost) geöffnet werden.';
       return;
     }
-    // Mikrofonliste (Namen erst nach erster Freigabe sichtbar)
     try {
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      devs.filter((d) => d.kind === 'audioinput').forEach((d, i) => {
+      (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput').forEach((d, i) => {
         const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || `Mikrofon ${i + 1}`; micSel.appendChild(o);
       });
     } catch { }
+    const updateStart = () => {
+      startBtn.disabled = !consent.checked || !health.ready;
+      hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Zum Starten tippen' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
+    };
+    consent.addEventListener('change', updateStart);
+    document.addEventListener('health', updateStart);
+    updateStart();
 
-    consent.addEventListener('change', () => { btn.disabled = !consent.checked; });
+    let ctx, node, analyser, stream, ws, t0, tick, raf, wakeLock = null, finished = false, lastLevels = [];
+    const text = $('#r-text');
+    const setStatus = (s) => { $('#r-status').textContent = s; };
+    const nearBottom = () => window.innerHeight + window.scrollY > document.body.scrollHeight - 160;
+    const follow = (was) => { if (was) window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); };
 
-    const setStatus = (s) => { status.textContent = s; };
+    async function lockScreen() { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { } }
+    const onVis = () => {
+      if (document.visibilityState === 'visible' && recordingActive) { lockScreen(); if (ctx && ctx.state === 'suspended') { ctx.resume(); toast('Die Aufnahme war im Hintergrund pausiert – bitte das Handy während der Aufnahme nicht sperren.', true); } }
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    function drawWave() {
+      const c = $('#r-wave'); if (!c || !analyser) return;
+      const dpr = window.devicePixelRatio || 1, w = c.clientWidth, h = c.clientHeight;
+      if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+      const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+      const buf = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(buf);
+      let sum = 0; for (const v of buf) sum += v * v;
+      const lvl = Math.min(1, Math.sqrt(sum / buf.length) * 6);
+      lastLevels.push(lvl); const bars = Math.floor(w / 4); if (lastLevels.length > bars) lastLevels = lastLevels.slice(-bars);
+      g.fillStyle = '#0069FF';
+      lastLevels.forEach((v, i) => { const bh = Math.max(2, v * (h - 4)); const x = w - (lastLevels.length - i) * 4; g.globalAlpha = 0.35 + 0.65 * (i / lastLevels.length); g.fillRect(x, (h - bh) / 2, 2.5, bh); });
+      raf = requestAnimationFrame(drawWave);
+    }
+
+    let partialEl = null;
+    function onMessage(m) {
+      const was = nearBottom();
+      if (m.type === 'ready') { $('#r-info').textContent = m.ai_clean ? '✨ KI-Bereinigung live aktiv' : ''; }
+      else if (m.type === 'partial') {
+        $('.live-empty', text)?.remove();
+        if (!partialEl) { partialEl = document.createElement('p'); text.appendChild(partialEl); }
+        partialEl.innerHTML = `<span class="ts">${fmt(m.start)}</span><span class="partial">${esc(m.text)}</span>`;
+        follow(was);
+      }
+      else if (m.type === 'segment') {
+        $('.live-empty', text)?.remove();
+        const p = partialEl || document.createElement('p'); partialEl = null;
+        p.innerHTML = `<span class="ts">${fmt(m.start)}</span><span class="fin" data-idx="${m.idx}">${esc(m.text)}</span>`;
+        if (!p.parentNode) text.appendChild(p);
+        follow(was);
+      }
+      else if (m.type === 'segment_empty') { partialEl?.remove(); partialEl = null; }
+      else if (m.type === 'clean') {
+        const el = $(`.fin[data-idx="${m.idx}"]`, text);
+        if (el) { el.textContent = m.text; el.classList.add('cleaned'); el.title = 'Von der KI bereinigt'; setTimeout(() => el.classList.remove('cleaned'), 1600); }
+      }
+      else if (m.type === 'status') {
+        if (m.state === 'transcribing' && m.pending > 3) setStatus(`Server ausgelastet – ${m.pending} Sätze in der Warteschlange`);
+        else if (recordingActive) setStatus('Hört zu …');
+      }
+      else if (m.type === 'final') { showDone(m); }
+      else if (m.type === 'warning' || m.type === 'error') toast(m.message, true);
+    }
 
     async function start() {
-      const title = $('#rec-title').value.trim();
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          audio: { deviceId: micSel.value ? { exact: micSel.value } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: micSel.value ? { exact: micSel.value } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       } catch (e) { toast('Mikrofon nicht freigegeben: ' + e.message, true); return; }
       try { ctx = new AudioContext({ sampleRate: 16000 }); } catch { ctx = new AudioContext(); }
       await ctx.audioWorklet.addModule('/static/worklet.js');
       const src = ctx.createMediaStreamSource(stream);
-      node = new AudioWorkletNode(ctx, 'pcm16-processor');
-      src.connect(node);
-
+      analyser = ctx.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
+      node = new AudioWorkletNode(ctx, 'pcm16-processor'); src.connect(node);
+      const title = $('#r-title').value.trim();
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}`);
       ws.binaryType = 'arraybuffer';
       const pending = [];
       ws.onopen = () => { pending.forEach((b) => ws.send(b)); pending.length = 0; };
       ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
-      ws.onerror = () => toast('Verbindung zum Server gestört', true);
-      ws.onclose = () => { if (recording) { setStatus('Verbindung getrennt – Aufnahme wurde serverseitig gesichert.'); stopLocal(); } };
-      node.port.onmessage = (ev) => {
-        level.style.width = Math.min(100, ev.data.rms * 400) + '%';
-        if (ws.readyState === 1) ws.send(ev.data.pcm); else if (ws.readyState === 0) pending.push(ev.data.pcm);
-      };
-      recording = true; segCount = 0; sumMs = 0;
-      btn.classList.add('recording'); btn.setAttribute('aria-label', 'Aufnahme beenden');
-      consent.disabled = true; $('#rec-title').disabled = true; micSel.disabled = true;
-      live.innerHTML = ''; $('#rec-final').classList.add('hidden');
-      t0 = Date.now(); tick = setInterval(() => (timer.textContent = fmt((Date.now() - t0) / 1000)), 250);
-      setStatus('Hört zu …');
+      ws.onclose = () => { if (recordingActive) { toast('Verbindung getrennt – die Aufnahme bis hierhin ist gespeichert.', true); stopLocal(); setStatus('Verbindung getrennt'); } };
+      node.port.onmessage = (ev) => { if (ws.readyState === 1) ws.send(ev.data.pcm); else if (ws.readyState === 0) pending.push(ev.data.pcm); };
+      recordingActive = true; finished = false;
+      $('#setup').classList.add('hidden'); $('#live').classList.remove('hidden');
+      $('#r-title-live').textContent = title || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+      t0 = Date.now(); tick = setInterval(() => ($('#r-time').textContent = fmt((Date.now() - t0) / 1000)), 250);
+      lockScreen(); drawWave();
     }
 
     function stopLocal() {
-      recording = false; clearInterval(tick);
-      btn.classList.remove('recording'); btn.setAttribute('aria-label', 'Aufnahme starten');
-      consent.disabled = false; $('#rec-title').disabled = false; micSel.disabled = false;
-      level.style.width = '0';
+      recordingActive = false; clearInterval(tick); cancelAnimationFrame(raf);
       try { node && node.disconnect(); } catch { }
       try { stream && stream.getTracks().forEach((t) => t.stop()); } catch { }
       try { ctx && ctx.close(); } catch { }
+      try { wakeLock && wakeLock.release(); } catch { }
     }
 
     function stop() {
-      setStatus('Wird abgeschlossen (zweiter Durchlauf) …');
-      btn.disabled = true;
+      setStatus('Wird gespeichert …');
+      $('#r-stop').disabled = true;
       try { ws.send(JSON.stringify({ type: 'stop' })); } catch { }
       stopLocal();
+      partialEl?.classList.add('hidden');
     }
 
-    function onMessage(m) {
-      if (m.type === 'ready') { setStatus('Hört zu …'); }
-      else if (m.type === 'status') {
-        if (m.state === 'transcribing' && m.pending > 3) setStatus(`Transkribiert … (${m.pending} Sätze warten – Server ausgelastet)`);
-        else if (m.state === 'transcribing') setStatus(`Transkribiert … (${m.pending || 0} wartend)`);
-        else if (m.state === 'listening') setStatus('Hört zu …');
-        else if (m.state === 'finalizing') setStatus('Zweiter Durchlauf über die ganze Aufnahme …');
-      }
-      else if (m.type === 'segment') {
-        segCount++; sumMs += m.compute_ms || 0;
-        const d = document.createElement('div'); d.className = 'seg';
-        d.innerHTML = `<span class="t">${fmt(m.start)}</span><span>${esc(m.text)}</span><span class="ms" title="Rechenzeit für dieses Segment">${m.compute_ms} ms</span>`;
-        live.appendChild(d); live.scrollTop = live.scrollHeight;
-      }
-      else if (m.type === 'final') {
-        btn.disabled = !consent.checked;
-        setStatus(m.refining ? 'Gespeichert – Verfeinerung mit dem genauen Modell läuft im Hintergrund.' : 'Fertig.');
-        const rtf = m.duration ? (m.processing_seconds / m.duration) : 0;
-        $('#rec-final-info').textContent = `${fmt(m.duration)} Audio, Live-Rechenzeit ${m.processing_seconds.toFixed(1)} s (${rtf < 1 ? (1 / Math.max(rtf, 0.001)).toFixed(0) + '× schneller als Echtzeit' : 'RTF ' + rtf.toFixed(2)}), ${m.segments.length} Segmente.${m.refining ? ' Das Transkript wird gerade mit dem genauen Modell verfeinert und aktualisiert sich automatisch.' : ''}`;
-        $('#rec-final-link').href = `#/t/${m.transcript_id}`;
-        $('#rec-final').classList.remove('hidden');
-        try { ws.close(); } catch { }
-      }
-      else if (m.type === 'warning') toast(m.message, true);
-      else if (m.type === 'error') { toast(m.message, true); }
+    function showDone(m) {
+      if (finished) return; finished = true;
+      $('.rec-bar .rec-state').innerHTML = '<span style="color:var(--ok)">✓ Gespeichert</span>';
+      setStatus(m.refining ? 'Genauer Durchlauf, Sprechererkennung und Bereinigung laufen im Hintergrund.' : 'Fertig.');
+      const card = document.createElement('div'); card.className = 'card done-card';
+      card.innerHTML = `<div class="ico">${ICON.check}</div><div style="flex:1"><strong>${fmt(m.duration)} aufgenommen</strong><div class="muted small">${m.segments.length} Sätze${m.refining ? ' · wird gerade verfeinert (Sprecher, genaues Modell)' : ''}</div></div><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a>`;
+      text.after(card);
+      $('#r-new').addEventListener('click', (e) => { e.preventDefault(); route(); });
+      try { ws.close(); } catch { }
+      loadSide();
     }
 
-    btn.addEventListener('click', () => (recording ? stop() : start()));
-    return () => { if (recording) stop(); };
+    startBtn.addEventListener('click', start);
+    $('#r-stop').addEventListener('click', stop);
+    return () => { document.removeEventListener('visibilitychange', onVis); document.removeEventListener('health', updateStart); if (recordingActive) stop(); cancelAnimationFrame(raf); };
   }
 
   // ================================================================ Hochladen
   async function renderHochladen() {
-    view.appendChild(tpl('tpl-hochladen'));
-    const drop = $('#drop'), input = $('#file'), jobs = $('#up-jobs');
+    view.innerHTML = `
+      <div class="page-head"><h1>Datei hochladen</h1><p>Aufnahmen vom Diktiergerät, Handy oder aus Teams – mp3, m4a, wav, mp4, webm … Die Datei bleibt auf diesem Server.</p></div>
+      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Datei auswählen">
+        <input id="file" type="file" accept="audio/*,video/*,.m4a,.mp3,.wav,.mp4,.webm,.ogg,.opus,.flac,.aac,.wma,.mkv,.mov" multiple hidden>
+        <div class="ico">${ICON.upload}</div>
+        <div><strong>Datei hierher ziehen</strong> oder klicken</div>
+        <div class="muted small" style="margin-top:.3rem">Mehrere Dateien möglich · werden nacheinander verarbeitet</div>
+      </div>
+      <div style="margin-top:1rem;max-width:480px"><input id="up-title" type="text" placeholder="Titel (optional, sonst Dateiname)" style="width:100%"></div>
+      <div class="jobs" id="jobs"></div>`;
+    const drop = $('#drop'), input = $('#file'), jobs = $('#jobs');
     drop.addEventListener('click', () => input.click());
     drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
     ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
     drop.addEventListener('drop', (e) => upload([...e.dataTransfer.files]));
     input.addEventListener('change', () => { upload([...input.files]); input.value = ''; });
-
     const running = new Map();
     async function upload(files) {
       for (const f of files) {
         const fd = new FormData(); fd.append('file', f); fd.append('title', $('#up-title').value.trim());
         const row = document.createElement('div'); row.className = 'job';
-        row.innerHTML = `<span class="ttl">${esc(f.name)}</span><div class="bar"><i></i></div><span class="badge">lädt hoch …</span>`;
+        row.innerHTML = `<span class="name">${esc(f.name)}</span><div class="bar"><i></i></div><span class="chip">lädt hoch …</span>`;
         jobs.prepend(row);
         try {
           const r = await fetch('/api/upload', { method: 'POST', body: fd });
           if (!r.ok) throw new Error((await r.json()).detail || r.statusText);
-          const j = await r.json();
-          running.set(j.id, row); row.querySelector('.badge').textContent = 'in Warteschlange';
-        } catch (e) { row.querySelector('.badge').textContent = 'Fehler: ' + e.message; row.querySelector('.badge').classList.add('danger'); }
+          const j = await r.json(); running.set(j.id, row); row.querySelector('.chip').textContent = 'in Warteschlange'; loadSide();
+        } catch (e) { const c = row.querySelector('.chip'); c.textContent = e.message; c.className = 'chip danger'; }
       }
     }
     const poll = setInterval(async () => {
@@ -204,285 +322,305 @@
       let list; try { list = await api('/api/transcripts'); } catch { return; }
       for (const [id, row] of running) {
         const t = list.find((x) => x.id === id); if (!t) continue;
-        const b = row.querySelector('.badge'), bar = row.querySelector('.bar i');
-        if (t.status === 'done') {
-          bar.style.width = '100%'; b.className = 'badge ok'; b.innerHTML = `fertig · <a href="#/t/${id}">öffnen</a>`; running.delete(id);
-        } else if (t.status === 'error') { b.className = 'badge danger'; b.textContent = 'Fehler: ' + t.error; running.delete(id); }
-        else if (t.progress) { bar.style.width = Math.round(100 * t.progress.done / Math.max(1, t.progress.total)) + '%'; b.textContent = `transkribiert … ${t.progress.done}/${t.progress.total}`; }
-        else b.textContent = 'wartet …';
+        const c = row.querySelector('.chip'), bar = row.querySelector('.bar i');
+        if (t.status === 'done') { bar.style.width = '100%'; c.className = 'chip ok'; c.innerHTML = `<a href="#/t/${id}">fertig – öffnen</a>`; running.delete(id); loadSide(); }
+        else if (t.status === 'error') { c.className = 'chip danger'; c.textContent = 'Fehler: ' + t.error; running.delete(id); }
+        else { const p = t.progress; c.textContent = progressText(p); if (p && p.done >= 0) bar.style.width = Math.round(100 * p.done / Math.max(1, p.total)) + '%'; }
       }
     }, 1000);
     return () => clearInterval(poll);
   }
+  function progressText(p) {
+    if (!p) return 'wartet …';
+    if (p.done === -1) return 'Sprecher werden erkannt …';
+    if (p.done === -2) return 'KI bereinigt den Text …';
+    return `transkribiert … ${p.done}/${p.total}`;
+  }
 
-  // ================================================================ Liste
+  // ================================================================ Liste (Handy)
   async function renderListe() {
-    view.appendChild(tpl('tpl-transkripte'));
-    const list = $('#tl-list'), search = $('#tl-search');
-    let items = [];
+    await loadSide();
+    view.innerHTML = `<div class="page-head"><h1>Verlauf</h1></div><input id="l-q" type="search" placeholder="Suchen …" style="width:100%;margin-bottom:.8rem"><div class="list" id="l-list"></div>`;
     const draw = () => {
-      const q = search.value.trim().toLowerCase();
-      const rows = items.filter((t) => !q || t.title.toLowerCase().includes(q));
-      if (!rows.length) { list.innerHTML = '<div class="empty-state">Noch keine Transkripte.</div>'; return; }
-      list.innerHTML = rows.map((t) => {
-        const st = t.status === 'done' ? '<span class="badge ok">fertig</span>' : t.status === 'error' ? `<span class="badge danger" title="${esc(t.error)}">Fehler</span>` : t.status === 'refining' ? '<span class="badge blue">wird verfeinert</span>' : '<span class="badge warn">in Arbeit</span>';
-        const rtf = t.duration && t.processing_seconds ? ` · ${(t.duration / t.processing_seconds).toFixed(0)}× Echtzeit` : '';
-        return `<a class="item" href="#/t/${t.id}"><span class="ttl">${esc(t.title)}</span>${st}<span class="sub">${fmtDate(t.created_at)} · ${fmt(t.duration)} · ${t.source === 'live' ? 'Live' : 'Upload'} · ${esc(t.model)}${rtf}</span><span class="sub">${t.has_audio ? 'mit Audio' : 'ohne Audio'}</span></a>`;
-      }).join('');
+      const q = $('#l-q').value.trim().toLowerCase();
+      const rows = sideItems.filter((t) => !q || t.title.toLowerCase().includes(q));
+      $('#l-list').innerHTML = rows.map((t) => `<a class="item" href="#/t/${t.id}"><span class="stat-dot ${t.status}"></span><div class="grow"><div class="t1">${esc(t.title)}</div><div class="t2">${fmtDate(t.created_at)} · ${fmtDur(t.duration)} · ${t.source === 'live' ? 'Live' : 'Upload'}</div></div></a>`).join('') || '<div class="empty">Noch keine Aufnahmen.</div>';
     };
-    const load = async () => { items = await api('/api/transcripts'); draw(); };
-    search.addEventListener('input', draw);
-    await load();
-    const poll = setInterval(() => { if (items.some((t) => t.status === 'processing' || t.status === 'refining')) load().catch(() => { }); }, 3000);
-    return () => clearInterval(poll);
+    $('#l-q').addEventListener('input', draw); draw();
   }
 
   // ================================================================ Glossar
   async function renderGlossar() {
-    view.appendChild(tpl('tpl-glossar'));
-    const body = $('#gl-body');
-    const rowHtml = (e = {}) => `<tr><td><input value="${esc(e.von)}" placeholder="z. B. Heilbrunn"></td><td><input value="${esc(e.zu)}" placeholder="z. B. Heilbronn"></td><td><button class="btn small" data-del>✕</button></td></tr>`;
-    const entries = await api('/api/glossar');
-    body.innerHTML = entries.map(rowHtml).join('') || rowHtml();
-    body.addEventListener('click', (e) => { if (e.target.matches('[data-del]')) e.target.closest('tr').remove(); });
-    $('#gl-add').addEventListener('click', () => body.insertAdjacentHTML('beforeend', rowHtml()));
+    view.innerHTML = `
+      <div class="page-head"><h1>Glossar</h1><p>Begriffe, Namen und Abkürzungen eurer Verwaltung. Sie werden nach der Erkennung automatisch korrigiert und der KI-Bereinigung als Pflicht-Schreibweise mitgegeben – z. B. „CHS“ → „Excel“, „Heilbrunn“ → „Heilbronn“.</p></div>
+      <div class="card"><table class="glossar"><thead><tr><th>Wird erkannt als</th><th>Richtig</th><th></th></tr></thead><tbody id="gl"></tbody></table>
+      <div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" id="gl-add">+ Eintrag</button><button class="btn primary" id="gl-save">Speichern</button></div></div>`;
+    const body = $('#gl');
+    const row = (e = {}) => `<tr><td><input type="text" value="${esc(e.von)}" placeholder="z. B. CHS"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
+    body.innerHTML = (await api('/api/glossar')).map(row).join('') || row();
+    body.addEventListener('click', (e) => { if (e.target.closest('[data-del]')) e.target.closest('tr').remove(); });
+    $('#gl-add').addEventListener('click', () => body.insertAdjacentHTML('beforeend', row()));
     $('#gl-save').addEventListener('click', async () => {
-      const eintraege = [...body.querySelectorAll('tr')].map((tr) => { const [a, b] = tr.querySelectorAll('input'); return { von: a.value, zu: b.value }; });
+      const eintraege = $$('tr', body).map((tr) => { const [a, b] = $$('input', tr); return { von: a.value, zu: b.value }; });
       const saved = await api('/api/glossar', { method: 'PUT', body: JSON.stringify({ eintraege }) });
-      toast(`Glossar gespeichert (${saved.length} Einträge) – gilt für alle neuen Transkriptionen.`);
+      toast(`Glossar gespeichert (${saved.length} Einträge)`);
     });
   }
 
   // ================================================================ Detail
   async function renderDetail(id) {
     let t = await api(`/api/transcripts/${id}`);
-    const sec = document.createElement('section'); sec.className = 'card'; view.appendChild(sec);
-    let tab = 'transkript', bereinigtOn = false, editMd = false;
+    let showClean = true, mTab = 'tx', editMd = false, busy = '';
 
-    const draw = () => {
-      const rtf = t.duration && t.processing_seconds ? (t.duration / t.processing_seconds) : 0;
-      sec.innerHTML = `
-        <div class="detail-head">
-          <h1><input class="title-edit" id="d-title" value="${esc(t.title)}" aria-label="Titel bearbeiten"></h1>
-          <div class="toolbar">
-            <a class="btn small" href="#/transkripte">← Liste</a>
-            <button class="btn small danger" id="d-del">Löschen</button>
-          </div>
-        </div>
-        <div class="meta">
-          <span class="badge ${t.status === 'done' ? 'ok' : t.status === 'error' ? 'danger' : t.status === 'refining' ? 'blue' : 'warn'}">${t.status === 'done' ? 'fertig' : t.status === 'error' ? 'Fehler' : t.status === 'refining' ? 'wird verfeinert …' + (t.progress ? ` ${t.progress.done}/${t.progress.total}` : '') : 'in Arbeit' + (t.progress ? ` ${t.progress.done}/${t.progress.total}` : '')}</span>
-          <span class="badge">${fmtDate(t.created_at)}</span>
-          <span class="badge">${fmt(t.duration)} Audio</span>
-          <span class="badge">${t.source === 'live' ? 'Live-Aufnahme' : 'Upload'}</span>
-          <span class="badge blue" title="Spracherkennungsmodell">${esc(t.model)}</span>
-          ${rtf ? `<span class="badge ok" title="Rechenzeit ${t.processing_seconds}s">${rtf.toFixed(0)}× schneller als Echtzeit</span>` : ''}
-          ${t.error ? `<span class="badge danger">${esc(t.error)}</span>` : ''}
-        </div>
-        ${t.has_audio ? `<div class="player"><audio id="d-audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio></div>` : '<p class="muted">Audio wurde gelöscht – Transkript bleibt erhalten.</p>'}
-        <div class="tabs">
-          <button data-tab="transkript" class="${tab === 'transkript' ? 'active' : ''}">Transkript</button>
-          <button data-tab="protokoll" class="${tab === 'protokoll' ? 'active' : ''}">Protokoll ${t.protokoll ? (t.protokoll.status === 'bestaetigt' ? '✓' : '(Entwurf)') : ''}</button>
-          <button data-tab="export" class="${tab === 'export' ? 'active' : ''}">Export</button>
-        </div>
-        <div id="d-body"></div>`;
-      $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); });
-      $('#d-del').addEventListener('click', async () => {
-        if (!confirm('Transkript und Audio endgültig löschen?')) return;
-        await api(`/api/transcripts/${t.id}`, { method: 'DELETE' }); toast('Gelöscht'); location.hash = '#/transkripte';
-      });
-      sec.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; draw(); }));
-      drawBody();
-    };
+    const speakerColor = () => { const m = new Map(); t.segments.forEach((s) => { if (s.speaker && !m.has(s.speaker)) m.set(s.speaker, COLORS[m.size % COLORS.length]); }); return m; };
+    const hasClean = () => t.segments.some((s) => s.clean);
+    const llm = () => health && health.llm_configured;
 
-    const audio = () => $('#d-audio');
-    const seek = (sec_) => { const a = audio(); if (!a) return; a.currentTime = Math.max(0, sec_ - 0.2); a.play().catch(() => { }); };
-    const highlightSeg = (idx) => {
-      sec.querySelectorAll('.segrow').forEach((r) => r.classList.toggle('active', +r.dataset.idx === idx));
-      const r = sec.querySelector(`.segrow[data-idx="${idx}"]`); if (r) r.scrollIntoView({ block: 'center', behavior: 'smooth' });
-    };
-
-    const drawBody = () => {
-      const body = $('#d-body');
-      if (tab === 'transkript') drawTranskript(body);
-      else if (tab === 'protokoll') drawProtokoll(body);
-      else drawExport(body);
-    };
-
-    // ---- Transkript-Editor
-    async function drawTranskript(body) {
-      let segs = t.segments;
-      if (bereinigtOn) { const b = await api(`/api/transcripts/${t.id}/bereinigt`); segs = t.segments.map((s, i) => ({ ...s, text: b[i].text })); }
-      body.innerHTML = `
-        <div class="toolbar">
-          <label class="btn small"><input type="checkbox" id="d-ber" ${bereinigtOn ? 'checked' : ''}> äh/ähm ausblenden (nur Anzeige)</label>
-          <span class="muted">Text direkt anklicken und korrigieren · Sprechername anklicken zum Umbenennen · Zeit anklicken springt im Audio</span>
+    function draw() {
+      const rtf = t.duration && t.processing_seconds ? t.duration / t.processing_seconds : 0;
+      const speakers = new Set(t.segments.map((s) => s.speaker).filter(Boolean));
+      const working = t.status === 'processing' || t.status === 'refining';
+      view.innerHTML = `
+        <div class="d-head">
+          <input class="d-title" id="d-title" value="${esc(t.title)}" aria-label="Titel bearbeiten">
+          <div class="menu"><button class="btn" id="d-export">${ICON.down}Export</button></div>
+          <div class="menu"><button class="btn ghost" id="d-more" aria-label="Weitere Aktionen">${ICON.more}</button></div>
         </div>
-        <div class="segs">${segs.map((s) => `
-          <div class="segrow" data-idx="${s.idx}">
-            <span class="t" data-seek="${s.start}">${fmt(s.start)}</span>
-            <span class="spk ${s.speaker ? '' : 'empty'}" data-spk="${esc(s.speaker)}">${esc(s.speaker || 'Sprecher?')}</span>
-            <div class="txt" contenteditable="${bereinigtOn ? 'false' : 'true'}" data-idx="${s.idx}">${esc(s.text)}</div>
-          </div>`).join('') || '<div class="empty-state">Keine Segmente (noch in Arbeit oder Stille).</div>'}
-        </div>`;
-      $('#d-ber').addEventListener('change', (e) => { bereinigtOn = e.target.checked; drawBody(); });
-      body.querySelectorAll('[data-seek]').forEach((el) => el.addEventListener('click', () => seek(+el.dataset.seek)));
-      body.querySelectorAll('.txt').forEach((el) => {
-        el.dataset.orig = el.textContent;
-        el.addEventListener('paste', (e) => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text/plain')); });
-        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
-        el.addEventListener('blur', async () => {
-          const idx = +el.dataset.idx, text = el.textContent.trim();
-          if (text === el.dataset.orig) return;
-          await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ text }) });
-          t.segments.find((s) => s.idx === idx).text = text; el.dataset.orig = text; toast('Gespeichert');
-        });
-      });
-      body.querySelectorAll('.spk').forEach((el) => el.addEventListener('click', async () => {
-        const row = el.closest('.segrow'), idx = +row.dataset.idx, old = el.dataset.spk;
-        const neu = prompt('Sprechername', old || ''); if (neu === null) return;
-        const same = t.segments.filter((s) => s.speaker === old).length;
-        if (old && same > 1 && confirm(`„${old}“ in allen ${same} Segmenten zu „${neu}“ umbenennen? (Abbrechen = nur dieses Segment)`)) {
-          await api(`/api/transcripts/${t.id}/speakers/rename`, { method: 'POST', body: JSON.stringify({ von: old, zu: neu }) });
-          t.segments.forEach((s) => { if (s.speaker === old) s.speaker = neu; });
-        } else {
-          await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ speaker: neu }) });
-          t.segments.find((s) => s.idx === idx).speaker = neu;
-        }
-        drawBody();
-      }));
-      // Mitlaufende Markierung beim Abspielen
-      const a = audio();
-      if (a) a.ontimeupdate = () => {
-        const cur = a.currentTime; const s = t.segments.find((x) => cur >= x.start && cur < x.end);
-        body.querySelectorAll('.segrow').forEach((r) => r.classList.toggle('active', !!s && +r.dataset.idx === s.idx));
-      };
+        <div class="d-meta">
+          <span class="chip">${fmtDate(t.created_at)}</span>
+          <span class="chip">${fmt(t.duration)}</span>
+          ${speakers.size ? `<span class="chip">${speakers.size} Sprecher</span>` : ''}
+          <span class="chip blue" title="Spracherkennung">${esc(t.model || '')}</span>
+          ${rtf ? `<span class="chip ok" title="Rechenzeit ${t.processing_seconds} s">${rtf.toFixed(0)}× schneller als Echtzeit</span>` : ''}
+          ${hasClean() ? '<span class="chip ai">✨ KI-bereinigt</span>' : ''}
+          ${t.status === 'error' ? `<span class="chip danger">${esc(t.error)}</span>` : (t.error ? `<span class="chip warn" title="${esc(t.error)}">Hinweis</span>` : '')}
+        </div>
+        ${working ? `<div class="progress-banner"><span class="spin"></span><span>${t.status === 'refining' ? 'Wird verfeinert: ' : ''}${progressText(t.progress)}</span><div class="bar"><i style="width:${t.progress && t.progress.done >= 0 ? Math.round(100 * t.progress.done / Math.max(1, t.progress.total)) : 100}%"></i></div></div>` : ''}
+        <div class="ai-bar">
+          <button class="btn ai" id="ai-clean" ${busy || !t.segments.length ? 'disabled' : ''}>${busy === 'clean' ? '<span class="spin"></span>' : ICON.spark}Text bereinigen</button>
+          <button class="btn ai" id="ai-sum" ${busy || !t.segments.length ? 'disabled' : ''}>${busy === 'sum' ? '<span class="spin"></span>' : ICON.doc}Zusammenfassen &amp; strukturieren</button>
+          <span class="note">${llm() ? `KI: ${esc(health.llm_model)} · korrigiert nur, erfindet nichts` : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
+        </div>
+        <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">Zusammenfassung</button></div></div>
+        <div class="d-grid" data-tab="${mTab}">
+          <section class="tx-pane">
+            <div class="pane-head"><h2>Transkript</h2><span class="sp"></span>
+              ${hasClean() ? `<div class="seg-toggle"><button data-view="clean" class="${showClean ? 'on' : ''}">✨ Bereinigt</button><button data-view="orig" class="${showClean ? '' : 'on'}">Original</button></div>` : ''}
+            </div>
+            <div class="tx ${t.status === 'refining' ? 'provisional' : ''}" id="tx">${drawBlocks()}</div>
+          </section>
+          <aside class="notes" id="notes">${drawNotes()}</aside>
+        </div>
+        ${t.has_audio ? `<div class="player"><audio id="audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio></div>` : ''}`;
+      bind();
     }
 
-    // ---- Protokoll
-    function renderMd(zeilen) {
-      return zeilen.map((z) => {
-        const raw = z.text.trim(); if (!raw) return '';
-        const m = raw.match(/^(#{1,4})\s+(.*)$/);
-        if (m) return `<h${Math.min(4, m[1].length + 2)}>${esc(m[2])}</h${Math.min(4, m[1].length + 2)}>`;
-        const li = /^[-*]\s+/.test(raw);
-        let html = esc(li ? raw.replace(/^[-*]\s+/, '') : raw);
-        html = html.replace(/\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, (ref) => {
-          const nums = [...ref.matchAll(/\d+/g)].map((x) => +x[0]);
-          return nums.map((n) => `<span class="ref ${t.segments.some((s) => s.idx === n) ? '' : 'bad'}" data-ref="${n}" title="Zur Stelle im Transkript">S${n}</span>`).join('');
-        });
-        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        return `<div class="pl ${li ? 'li' : ''} ${z.status}">${html}</div>`;
+    function drawBlocks() {
+      if (!t.segments.length) return `<div class="empty">${t.status === 'error' ? 'Transkription fehlgeschlagen.' : 'Noch kein Text – die Verarbeitung läuft.'}</div>`;
+      const colors = speakerColor();
+      const blocks = [];
+      for (const s of t.segments) {
+        const last = blocks[blocks.length - 1];
+        if (last && last.speaker === s.speaker && s.start - last.segs[last.segs.length - 1].end < 30) last.segs.push(s);
+        else blocks.push({ speaker: s.speaker, segs: [s] });
+      }
+      return blocks.map((b) => {
+        const col = colors.get(b.speaker);
+        return `<div class="block">
+          <div class="avatar ${col ? '' : 'none'}" style="${col ? 'background:' + col : ''}">${b.speaker ? esc(initials(b.speaker)) : '?'}</div>
+          <div class="bhead"><span class="bname" data-spk="${esc(b.speaker)}" title="Namen ändern">${esc(b.speaker || 'Sprecher zuordnen')}</span><span class="btime" data-seek="${b.segs[0].start}">${fmt(b.segs[0].start)}</span></div>
+          <div class="bbody">${b.segs.map((s) => {
+            const useClean = showClean && s.clean;
+            const mk = useClean && s.clean !== s.text ? `<span class="mk ai" title="Original: ${esc(s.text)}">✨</span>` : (s.clean_note ? `<span class="mk warn" title="KI-Bereinigung verworfen: ${esc(s.clean_note)}">⚠</span>` : '');
+            return `<span class="seg" data-idx="${s.idx}" data-start="${s.start}" data-end="${s.end}"><span class="txt" contenteditable="true" spellcheck="true" data-field="${useClean ? 'clean' : 'text'}">${esc(useClean ? s.clean : s.text)}</span>${mk}</span>`;
+          }).join('')}</div>
+        </div>`;
       }).join('');
     }
 
-    function drawProtokoll(body) {
-      const p = t.protokoll;
-      const styles = (health && health.styles) || { ergebnis: 'Ergebnisprotokoll', verlauf: 'Verlaufsprotokoll' };
-      const styleSel = `<select id="p-style">${Object.entries(styles).map(([k, v]) => `<option value="${k}" ${p && p.style === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
-      const llm = health && health.llm_configured;
-      body.innerHTML = `
-        <div class="toolbar">
-          <label class="field"><span>Protokollart</span>${styleSel}</label>
-          <button class="btn" id="p-nova" title="Kopiert Anweisung + Transkript in die Zwischenablage – in NOVA einfügen">In NOVA öffnen (Prompt kopieren)</button>
-          <button class="btn" id="p-import">Antwort aus NOVA einfügen &amp; prüfen</button>
-          <button class="btn primary" id="p-ki" ${llm ? '' : 'disabled title="Keine Protokoll-KI konfiguriert (LLM_BASE_URL)"'}>Protokoll per KI erstellen${llm ? ' (' + esc(health.llm_model) + ')' : ''}</button>
-        </div>
-        <div id="p-out"></div>`;
-      const out = $('#p-out');
-      const styleOf = () => $('#p-style').value;
-
-      $('#p-nova').addEventListener('click', async () => {
-        const text = await api(`/api/transcripts/${t.id}/nova-prompt?style=${styleOf()}`);
-        try { await navigator.clipboard.writeText(text); toast('Prompt mit Transkript kopiert – jetzt in NOVA einfügen. Die Antwort danach hier über „Antwort aus NOVA einfügen“ prüfen.'); }
-        catch { out.innerHTML = `<p class="muted">Zwischenablage nicht verfügbar – Text manuell kopieren:</p><textarea class="md">${esc(text)}</textarea>`; }
-      });
-      $('#p-import').addEventListener('click', () => {
-        out.innerHTML = `<p class="muted">Protokolltext von NOVA hier einfügen (mit den [S…]-Belegen):</p><textarea class="md" id="p-paste"></textarea><div class="toolbar"><button class="btn primary" id="p-paste-ok">Prüfen &amp; speichern</button></div>`;
-        $('#p-paste-ok').addEventListener('click', async () => {
-          try {
-            t.protokoll = await api(`/api/transcripts/${t.id}/protokoll/import`, { method: 'POST', body: JSON.stringify({ style: styleOf(), protokoll_md: $('#p-paste').value }) });
-            drawBody();
-          } catch (e) { toast(e.message, true); }
-        });
-      });
-      $('#p-ki').addEventListener('click', async () => {
-        out.innerHTML = '<p class="muted">Die KI extrahiert zuerst belegte Bausteine, prüft die Zitate gegen das Transkript und schreibt dann das Protokoll … das kann 1–3 Minuten dauern.</p>';
-        $('#p-ki').disabled = true;
-        try { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style: styleOf() }) }); drawBody(); }
-        catch (e) { toast(e.message, true); $('#p-ki').disabled = false; out.innerHTML = ''; }
-      });
-
-      if (!p) { out.innerHTML = '<p class="muted">Noch kein Protokoll. Weg 1: Prompt kopieren, in NOVA einfügen, Antwort hier prüfen lassen. Weg 2: direkt per KI erstellen (wenn konfiguriert).</p>'; return; }
-      const pr = p.content.pruefung || { zeilen: [], zeilen_inhalt: 0, unbelegt: 0, ungueltige_belege: 0, quote_belegt: 1 };
-      const verworfen = p.content.bausteine_verworfen || 0;
-      out.innerHTML = `
-        <div class="stat">
-          <div><strong>${Math.round(pr.quote_belegt * 100)} %</strong>Aussagen mit gültigem Beleg</div>
-          <div><strong>${pr.unbelegt}</strong>ohne Beleg (gelb)</div>
-          <div><strong>${pr.ungueltige_belege}</strong>ungültiger Beleg (rot)</div>
-          ${p.content.bausteine ? `<div><strong>${verworfen}</strong>Bausteine verworfen (Zitat passte nicht)</div>` : ''}
-          <div><strong>${p.status === 'bestaetigt' ? 'bestätigt' : 'Entwurf'}</strong>Status</div>
-        </div>
-        <div class="toolbar">
-          <button class="btn small" id="p-edit">${editMd ? 'Vorschau' : 'Bearbeiten'}</button>
-          <button class="btn small" id="p-confirm">${p.status === 'bestaetigt' ? 'Bestätigung aufheben' : 'Als geprüft bestätigen'}</button>
-          <a class="btn small" href="/api/transcripts/${t.id}/export?format=docx&protokoll=1">Word mit Protokoll</a>
-          <span class="muted">Klick auf S-Nummer springt zur Stelle im Audio/Transkript.</span>
-        </div>
-        ${editMd ? `<textarea class="md" id="p-md">${esc(p.content.protokoll_md)}</textarea><div class="toolbar"><button class="btn primary small" id="p-save">Speichern &amp; neu prüfen</button></div>` : `<div class="prot">${renderMd(pr.zeilen)}</div>`}
-        ${p.content.bausteine ? `<details><summary class="muted">Bausteine der KI mit Zitatprüfung (${p.content.bausteine.length})</summary><div class="segs">${p.content.bausteine.map((b) => `<div class="segrow" style="grid-template-columns:70px 90px 1fr"><span class="badge ${b.beleg_ok ? 'ok' : 'danger'}">${b.beleg_ok ? 'ok' : 'verworfen'}</span><span class="badge">${esc(b.typ)}</span><div>${esc(b.text)}<div class="muted">„${esc(b.zitat)}“ · <span class="ref" data-ref="${b.segment}">S${b.segment}</span> · Übereinstimmung ${Math.round((b.zitat_score || 0) * 100)} %</div></div></div>`).join('')}</div></details>` : ''}`;
-      $('#p-edit').addEventListener('click', () => { editMd = !editMd; drawBody(); });
-      $('#p-confirm').addEventListener('click', async () => {
-        t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: p.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt' }) }); drawBody();
-      });
-      const save = $('#p-save'); if (save) save.addEventListener('click', async () => {
-        t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: $('#p-md').value }) }); editMd = false; drawBody();
-      });
-      out.querySelectorAll('[data-ref]').forEach((el) => el.addEventListener('click', () => {
-        const n = +el.dataset.ref, s = t.segments.find((x) => x.idx === n); if (!s) { toast('Segment S' + n + ' gibt es nicht', true); return; }
-        seek(s.start); tab = 'transkript'; draw(); setTimeout(() => highlightSeg(n), 50);
-      }));
+    function renderMd(zeilen) {
+      return zeilen.map((z) => {
+        const raw = z.text.trim(); if (!raw) return '';
+        const h = raw.match(/^(#{1,4})\s+(.*)$/);
+        if (h) return `<h${h[1].length <= 2 ? 3 : 4}>${esc(h[2])}</h${h[1].length <= 2 ? 3 : 4}>`;
+        const li = /^[-*]\s+/.test(raw);
+        let html = esc(li ? raw.replace(/^[-*]\s+/, '') : raw);
+        html = html.replace(/\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, (ref) => [...ref.matchAll(/\d+/g)].map((x) => +x[0]).map((n) => `<span class="ref ${t.segments.some((s) => s.idx === n) ? '' : 'bad'}" data-ref="${n}" title="Zur Stelle springen">S${n}</span>`).join(''));
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        return `<div class="pl ${li ? 'li' : ''} ${z.status}" ${z.status === 'unbelegt' ? 'title="Keine Belegstelle – bitte prüfen"' : ''}>${html}</div>`;
+      }).join('');
     }
 
-    // ---- Export
-    function drawExport(body) {
-      const u = `/api/transcripts/${t.id}/export?format=`;
-      body.innerHTML = `
-        <div class="toolbar">
-          <a class="btn" href="${u}docx">Word (.docx)</a>
-          <a class="btn" href="${u}docx&protokoll=1">Word inkl. Protokoll</a>
-          <a class="btn" href="${u}txt">Text (.txt)</a>
-          <a class="btn" href="${u}txt&zeit=false&sprecher=false">Nur Fließtext</a>
-          <a class="btn" href="${u}md">Markdown</a>
-          <a class="btn" href="${u}srt">Untertitel (.srt)</a>
-        </div>
-        <h2>Datenschutz</h2>
-        <p class="muted">Alles liegt ausschließlich auf diesem Server. Audio kann nach Fertigstellung des Protokolls gelöscht werden – das Transkript bleibt.</p>
-        <div class="toolbar">
-          <button class="btn danger" id="x-delaudio" ${t.has_audio ? '' : 'disabled'}>Nur Audio löschen</button>
+    function drawNotes() {
+      const p = t.protokoll;
+      const styles = (health && health.styles) || { zusammenfassung: 'Zusammenfassung', ergebnis: 'Ergebnisprotokoll', verlauf: 'Verlaufsprotokoll' };
+      const sel = `<select id="p-style" style="padding:.35rem .5rem;font-size:.85rem">${Object.entries(styles).map(([k, v]) => `<option value="${k}" ${p && p.style === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
+      if (!p) return `<div class="pane-head"><h2>Zusammenfassung</h2><span class="sp"></span>${sel}</div><div class="card empty-notes"><div class="big">✨</div>Noch keine Zusammenfassung.<br>Klicke auf <strong>„Zusammenfassen &amp; strukturieren“</strong>. Jede Aussage bekommt eine Belegstelle im Transkript – nichts wird erfunden.</div>`;
+      const pr = p.content.pruefung || { zeilen: [], quote_belegt: 1, unbelegt: 0, ungueltige_belege: 0 };
+      return `<div class="pane-head"><h2>${esc(styles[p.style] || 'Zusammenfassung')}</h2><span class="sp"></span>${sel}</div>
+        <div class="card">
+          <div class="pstats">
+            <span class="chip ${pr.quote_belegt >= 0.95 ? 'ok' : 'warn'}" title="Anteil der Aussagen mit gültiger Belegstelle">${Math.round(pr.quote_belegt * 100)} % belegt</span>
+            ${pr.unbelegt ? `<span class="chip warn">${pr.unbelegt} ohne Beleg</span>` : ''}
+            ${pr.ungueltige_belege ? `<span class="chip danger">${pr.ungueltige_belege} falscher Beleg</span>` : ''}
+            <span class="chip ${p.status === 'bestaetigt' ? 'ok' : ''}">${p.status === 'bestaetigt' ? '✓ geprüft' : 'Entwurf'}</span>
+          </div>
+          ${editMd ? `<textarea id="p-md" style="width:100%;min-height:320px;font-family:ui-monospace,Consolas,monospace;font-size:.85rem">${esc(p.content.protokoll_md)}</textarea>` : `<div class="prot">${renderMd(pr.zeilen)}</div>`}
+          <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.9rem">
+            ${editMd ? '<button class="btn primary sm" id="p-save">Speichern &amp; prüfen</button>' : '<button class="btn sm" id="p-edit">Bearbeiten</button>'}
+            <button class="btn sm" id="p-confirm">${p.status === 'bestaetigt' ? 'Bestätigung aufheben' : ICON.check + 'Als geprüft markieren'}</button>
+            <button class="btn ghost sm" id="p-copy">Kopieren</button>
+          </div>
         </div>`;
-      $('#x-delaudio').addEventListener('click', async () => {
-        if (!confirm('Audio dieser Aufnahme endgültig löschen? Das Transkript bleibt erhalten.')) return;
-        await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw();
+    }
+
+    // ---- Interaktion
+    const audio = () => $('#audio');
+    const seek = (sec) => { const a = audio(); if (!a) return; a.currentTime = Math.max(0, sec - 0.2); a.play().catch(() => { }); };
+    const jump = (idx) => {
+      const s = t.segments.find((x) => x.idx === idx); if (!s) { toast(`Segment S${idx} gibt es nicht`, true); return; }
+      if (mTab !== 'tx' && innerWidth <= 900) { mTab = 'tx'; draw(); }
+      const el = $(`.seg[data-idx="${idx}"]`); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('playing'); setTimeout(() => el.classList.remove('playing'), 2500); }
+      seek(s.start);
+    };
+
+    function bind() {
+      $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); loadSide(); });
+      $('#d-export').addEventListener('click', (e) => openMenu(e.currentTarget, `
+        <a href="/api/transcripts/${t.id}/export?format=docx">Word (.docx)</a>
+        <a href="/api/transcripts/${t.id}/export?format=docx&protokoll=1">Word mit Zusammenfassung</a>
+        <a href="/api/transcripts/${t.id}/export?format=txt">Text mit Zeit &amp; Sprecher</a>
+        <a href="/api/transcripts/${t.id}/export?format=txt&zeit=false&sprecher=false">Nur Fließtext</a>
+        <a href="/api/transcripts/${t.id}/export?format=md">Markdown</a>
+        <a href="/api/transcripts/${t.id}/export?format=srt">Untertitel (.srt)</a>`));
+      $('#d-more').addEventListener('click', (e) => openMenu(e.currentTarget, `
+        ${hasClean() ? '<button data-act="unclean">KI-Bereinigung verwerfen</button>' : ''}
+        <button data-act="delaudio" ${t.has_audio ? '' : 'disabled'}>Nur Audio löschen</button><hr>
+        <button data-act="delete" class="danger">Aufnahme endgültig löschen</button>`, async (act) => {
+        if (act === 'delete') { if (!confirm('Transkript und Audio endgültig löschen?')) return; await api(`/api/transcripts/${t.id}`, { method: 'DELETE' }); toast('Gelöscht'); loadSide(); location.hash = '#/aufnahme'; }
+        if (act === 'delaudio') { if (!confirm('Audio endgültig löschen? Das Transkript bleibt erhalten.')) return; await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw(); }
+        if (act === 'unclean') { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'DELETE' }); await reload(); toast('Bereinigung verworfen – Original wird angezeigt'); }
+      }));
+      $$('[data-mtab]').forEach((b) => b.addEventListener('click', () => { mTab = b.dataset.mtab; draw(); }));
+      $$('[data-view]').forEach((b) => b.addEventListener('click', () => { showClean = b.dataset.view === 'clean'; draw(); }));
+      $$('[data-seek]').forEach((el) => el.addEventListener('click', () => seek(+el.dataset.seek)));
+      $$('.seg .txt').forEach((el) => {
+        el.dataset.orig = el.textContent;
+        el.addEventListener('paste', (e) => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text/plain')); });
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+        el.addEventListener('dblclick', () => seek(+el.parentElement.dataset.start));
+        el.addEventListener('blur', async () => {
+          const val = el.textContent.trim(); if (val === el.dataset.orig) return;
+          const idx = +el.parentElement.dataset.idx, field = el.dataset.field;
+          await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ [field]: val }) });
+          const s = t.segments.find((x) => x.idx === idx); s[field] = val; el.dataset.orig = val; toast('Gespeichert');
+        });
       });
+      $$('.bname').forEach((el) => el.addEventListener('click', async () => {
+        const old = el.dataset.spk, neu = prompt(old ? `Neuer Name für „${old}“ (gilt für alle Stellen):` : 'Sprechername:', old && !old.startsWith('Sprecher ') ? old : '');
+        if (neu === null || !neu.trim()) return;
+        if (old) { await api(`/api/transcripts/${t.id}/speakers/rename`, { method: 'POST', body: JSON.stringify({ von: old, zu: neu.trim() }) }); t.segments.forEach((s) => { if (s.speaker === old) s.speaker = neu.trim(); }); }
+        else { const idx = +el.closest('.block').querySelector('.seg').dataset.idx; await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ speaker: neu.trim() }) }); t.segments.find((s) => s.idx === idx).speaker = neu.trim(); }
+        draw();
+      }));
+      $$('[data-ref]').forEach((el) => el.addEventListener('click', () => jump(+el.dataset.ref)));
+      const a = audio();
+      if (a) a.ontimeupdate = () => {
+        const cur = a.currentTime;
+        $$('.seg').forEach((el) => el.classList.toggle('playing', cur >= +el.dataset.start && cur < +el.dataset.end));
+      };
+      $('#ai-clean').addEventListener('click', aiClean);
+      $('#ai-sum').addEventListener('click', aiSum);
+      $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); });
+      $('#p-save')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: $('#p-md').value }) }); editMd = false; draw(); });
+      $('#p-confirm')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: t.protokoll.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt' }) }); draw(); });
+      $('#p-copy')?.addEventListener('click', async () => { if (await copy(t.protokoll.content.protokoll_md)) toast('Zusammenfassung kopiert'); });
+    }
+
+    function openMenu(anchor, html, onAct) {
+      $$('.menu-list').forEach((m) => m.remove());
+      const m = document.createElement('div'); m.className = 'menu-list'; m.innerHTML = html;
+      anchor.parentElement.appendChild(m);
+      setTimeout(() => document.addEventListener('click', function close(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
+      if (onAct) m.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) { m.remove(); onAct(b.dataset.act); } });
+    }
+
+    async function reload() { t = await api(`/api/transcripts/${id}`); draw(); }
+
+    // ---- KI: Bereinigen
+    async function aiClean() {
+      if (llm()) {
+        busy = 'clean'; draw();
+        try {
+          const r = await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'POST' });
+          await reload(); showClean = true;
+          toast(`${r.uebernommen} Sätze bereinigt${r.verworfen ? ` · ${r.verworfen} verworfen (zu stark verändert – Original bleibt)` : ''}`);
+        } catch (e) { toast(e.message, true); } finally { busy = ''; draw(); }
+        return;
+      }
+      const prompt = await api(`/api/transcripts/${t.id}/bereinigen-prompt`);
+      const ok = await copy(prompt);
+      const card = modal.open(`<h2>✨ Text bereinigen über NOVA</h2>
+        <p class="muted">Die KI korrigiert nur Erkennungs- und Schreibfehler – kein Zusammenfassen. Jede Zeile wird danach automatisch gegen das Original geprüft.</p>
+        <div class="steps">
+          <div class="step"><div><strong>${ok ? 'Anweisung und Transkript sind kopiert.' : 'Anweisung kopieren:'}</strong><br>In NOVA einen neuen Chat öffnen und mit Strg+V einfügen.${ok ? '' : `<textarea readonly>${esc(prompt)}</textarea>`}</div></div>
+          <div class="step"><div><strong>Antwort von NOVA komplett kopieren</strong> und hier einfügen:<textarea id="m-in" placeholder="[S0] …\n[S1] …"></textarea></div></div>
+        </div>
+        <div class="modal-actions"><button class="btn" id="m-copy">Nochmal kopieren</button><button class="btn" id="m-x">Abbrechen</button><button class="btn primary" id="m-ok">Prüfen &amp; übernehmen</button></div>`);
+      $('#m-x', card).onclick = modal.close;
+      $('#m-copy', card).onclick = async () => { if (await copy(prompt)) toast('Kopiert'); };
+      $('#m-ok', card).onclick = async () => {
+        try {
+          const r = await api(`/api/transcripts/${t.id}/bereinigen/import`, { method: 'POST', body: JSON.stringify({ text: $('#m-in', card).value }) });
+          modal.close(); await reload(); showClean = true; draw();
+          toast(`${r.uebernommen} Sätze übernommen${r.verworfen ? ` · ${r.verworfen} verworfen (Original bleibt)` : ''}${r.fehlend ? ` · ${r.fehlend} fehlten in der Antwort` : ''}`);
+        } catch (e) { toast(e.message, true); }
+      };
+    }
+
+    // ---- KI: Zusammenfassen
+    async function aiSum() {
+      const style = ($('#p-style') && $('#p-style').value) || 'zusammenfassung';
+      if (llm()) {
+        busy = 'sum'; draw();
+        try { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); mTab = 'notes'; }
+        catch (e) { toast(e.message, true); } finally { busy = ''; draw(); }
+        return;
+      }
+      const prompt = await api(`/api/transcripts/${t.id}/nova-prompt?style=${style}`);
+      const ok = await copy(prompt);
+      const card = modal.open(`<h2>Zusammenfassen &amp; strukturieren über NOVA</h2>
+        <p class="muted">Jede Aussage muss eine Belegstelle wie [S12] tragen. Aussagen ohne Beleg werden danach gelb markiert – so fällt sofort auf, wenn die KI etwas hinzudichtet.</p>
+        <div class="steps">
+          <div class="step"><div><strong>${ok ? 'Anweisung und Transkript sind kopiert.' : 'Anweisung kopieren:'}</strong><br>In NOVA einfügen (Strg+V) und absenden.${ok ? '' : `<textarea readonly>${esc(prompt)}</textarea>`}</div></div>
+          <div class="step"><div><strong>Antwort hier einfügen:</strong><textarea id="m-in" placeholder="## Worum ging es …"></textarea></div></div>
+        </div>
+        <div class="modal-actions"><button class="btn" id="m-copy">Nochmal kopieren</button><button class="btn" id="m-x">Abbrechen</button><button class="btn primary" id="m-ok">Prüfen &amp; übernehmen</button></div>`);
+      $('#m-x', card).onclick = modal.close;
+      $('#m-copy', card).onclick = async () => { if (await copy(prompt)) toast('Kopiert'); };
+      $('#m-ok', card).onclick = async () => {
+        try { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll/import`, { method: 'POST', body: JSON.stringify({ style, protokoll_md: $('#m-in', card).value }) }); modal.close(); mTab = 'notes'; draw(); }
+        catch (e) { toast(e.message, true); }
+      };
     }
 
     draw();
-    // Bei laufender Verarbeitung nachladen
     const poll = setInterval(async () => {
       if (t.status !== 'processing' && t.status !== 'refining') return;
-      if (document.activeElement && document.activeElement.isContentEditable) return; // nicht beim Tippen neu zeichnen
+      if (document.activeElement && (document.activeElement.isContentEditable || document.activeElement.tagName === 'TEXTAREA')) return;
       try {
         const n = await api(`/api/transcripts/${id}`);
-        const changed = n.status !== t.status || JSON.stringify(n.progress) !== JSON.stringify(t.progress);
-        t = n; if (changed) { draw(); if (n.status === 'done') toast('Transkript fertig verfeinert'); }
+        const changed = n.status !== t.status || JSON.stringify(n.progress) !== JSON.stringify(t.progress) || n.segments.length !== t.segments.length;
+        const a = audio(), pos = a ? a.currentTime : 0, playing = a && !a.paused;
+        t = n;
+        if (changed) { draw(); const b = audio(); if (b && pos) { b.currentTime = pos; if (playing) b.play().catch(() => { }); } if (n.status === 'done') { toast('Fertig verfeinert'); loadSide(); } }
       } catch { }
     }, 2000);
-    return () => { clearInterval(poll); };
+    return () => clearInterval(poll);
   }
 
-  // ---------------------------------------------------------------- Start
-  loadHealth().then(route);
-  setInterval(loadHealth, 30000);
+  // ================================================================ Start
+  loadHealth();
+  loadSide().then(route);
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => { });
 })();

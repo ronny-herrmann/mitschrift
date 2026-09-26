@@ -81,3 +81,47 @@ def test_create_protokoll_pipeline():
 
 def test_bereinigt():
     assert bereinigt("ähm also wir, äh, beschließen das. Hm, genau.") == "Also wir, beschließen das. Genau."
+
+
+# --- KI-Bereinigung ---------------------------------------------------------------
+from app import bereinigung  # noqa: E402
+
+
+def test_fidelity_rules():
+    ok, _ = bereinigung.fidelity("ähm wir nutzen das CHS für die Tabellen", "Wir nutzen das Excel für die Tabellen.")
+    assert ok
+    ok, why = bereinigung.fidelity("Der Haushalt wird vorgestellt.", "Der Gemeinderat hat den Haushalt 2027 mit 12 Stimmen beschlossen und vertagt.")
+    assert not ok, why
+    ok, _ = bereinigung.fidelity("wir treffen uns um drei", "Wir treffen uns um 3.")
+    assert ok
+    ok, why = bereinigung.fidelity("wir treffen uns am montag", "Wir treffen uns am Montag um 14 Uhr.")
+    assert not ok and "Zahlen" in why
+    ok, why = bereinigung.fidelity("Ein Beinstand.", "Einbeinstand.")
+    assert ok, why
+    ok, why = bereinigung.fidelity("äh äh ja also wir wir machen das", "Ja, also wir machen das.")
+    assert ok, why
+
+
+def test_parse_and_prompt():
+    t = make_transcript()
+    p = bereinigung.build_prompt(t, [{"von": "CHS", "zu": "Excel"}])
+    assert "[S0] Guten Tag" in p and "Excel" in p and "CHS → Excel" in p
+    assert bereinigung.parse_lines("[S0] Hallo.\nMüll\n[ S 3 ] Test") == {0: "Hallo.", 3: "Test"}
+
+
+class CleanLLM(LLMClient):
+    def __init__(self):
+        super().__init__("http://fake", "", "fake")
+
+    def chat(self, system, user, temperature=0.0, json_mode=False):
+        return "\n".join(line.replace("Haushalt 2027", "Haushalt 2027 (korrigiert)") if "[S1]" in line
+                         else ("[S2] Etwas völlig anderes wurde hier frei erfunden und hinzugefügt." if "[S2]" in line else line)
+                         for line in user.split("ZEILEN:\n", 1)[1].splitlines())
+
+
+def test_clean_segments_with_fake_llm():
+    t = make_transcript()
+    cleaned = bereinigung.clean_segments(CleanLLM(), t.segments, [])
+    changes, ok_n, bad_n = bereinigung.apply_cleaned(t.segments, cleaned)
+    assert ok_n == 3 and bad_n == 1
+    assert [c["idx"] for c in changes if not c["ok"]] == [2]

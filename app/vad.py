@@ -94,6 +94,7 @@ class Segmenter:
     _buf: list[np.ndarray] = field(default_factory=list)   # Blöcke seit Segmentstart (inkl. Vorlauf)
     _buf_start: int = 0
     _pre: list[np.ndarray] = field(default_factory=list)   # Ringpuffer für Vorlauf
+    _probs: list[float] = field(default_factory=list)      # Sprachwahrscheinlichkeit je Block in _buf
 
     @property
     def neg_threshold(self) -> float:
@@ -119,11 +120,13 @@ class Segmenter:
                 self._silence_ms = 0.0
                 self._speech_ms = CHUNK_MS
                 self._buf = list(self._pre)
+                self._probs = [0.0] * (len(self._pre) - 1) + [prob]
                 self._buf_start = pos - CHUNK * (len(self._pre) - 1)
                 self._pre = []
             return out
 
         self._buf.append(chunk)
+        self._probs.append(prob)
         if prob >= self.threshold:
             self._silence_ms = 0.0
             self._speech_ms += CHUNK_MS
@@ -138,10 +141,42 @@ class Segmenter:
             if seg:
                 out.append(seg)
         elif total_s >= self.max_segment_s:
-            seg = self._emit(trim_silence=False)
+            seg = self._cut_at_quietest()
             if seg:
                 out.append(seg)
         return out
+
+    def _cut_at_quietest(self) -> SpeechSegment | None:
+        """Zu langes Segment an der leisesten Stelle der zweiten Hälfte teilen (nicht mitten im Wort)."""
+        n = len(self._buf)
+        lo = max(n // 2, int(1000 / CHUNK_MS))
+        if lo >= n - 1:
+            return self._emit(trim_silence=False)
+        window = self._probs[lo:n - 1]
+        k = lo + int(np.argmin(window))
+        head, tail = self._buf[:k + 1], self._buf[k + 1:]
+        audio = np.concatenate(head)
+        seg = SpeechSegment(start=max(self._buf_start, 0), end=self._buf_start + len(audio), audio=audio)
+        self._buf_start += len(audio)
+        self._buf = tail
+        self._probs = self._probs[k + 1:]
+        self._speech_ms = sum(CHUNK_MS for p in self._probs if p >= self.threshold)
+        return seg
+
+    @property
+    def speaking(self) -> bool:
+        return self._speaking
+
+    def current(self, max_s: float = 12.0) -> tuple[int, np.ndarray] | None:
+        """Laufendes (noch nicht abgeschlossenes) Segment – für Zwischenergebnisse."""
+        if not self._speaking or not self._buf:
+            return None
+        audio = np.concatenate(self._buf)
+        start = self._buf_start
+        cut = len(audio) - int(max_s * SAMPLE_RATE)
+        if cut > 0:
+            audio, start = audio[cut:], start + cut
+        return start, audio
 
     def flush(self) -> list[SpeechSegment]:
         """Am Ende der Aufnahme: laufendes Segment abschließen."""
@@ -165,6 +200,7 @@ class Segmenter:
         # Die letzten (stillen) Blöcke als Vorlauf für das nächste Segment behalten
         self._pre = list(self._buf[-self._pre_chunks:])
         self._buf = []
+        self._probs = []
         self._silence_ms = 0.0
         self._speech_ms = 0.0
         if speech_ms < self.min_speech_ms or len(audio) < CHUNK:

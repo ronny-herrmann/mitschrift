@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__
-from . import auth
+from . import auth, bereinigung
 from .asr import create_backend
 from .config import settings
 from .export import to_docx, to_markdown, to_srt, to_txt
@@ -35,52 +35,74 @@ ALLOWED_UPLOAD = {".wav", ".mp3", ".m4a", ".mp4", ".aac", ".ogg", ".opus", ".web
 
 class State:
     store: Store
-    transcriber: Transcriber
-    jobs: JobQueue
-    model_info: dict
-    startup_seconds: float
+    transcriber: Transcriber | None = None
+    jobs: JobQueue | None = None
+    model_info: dict = {}
+    startup_seconds: float = 0.0
+    load_status: str = "lädt"      # lädt | bereit | fehler
+    load_error: str = ""
 
 
 state = State()
 
 
+def get_llm() -> LLMClient | None:
+    if not settings.llm_configured:
+        return None
+    return LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_s)
+
+
+def _load_models() -> None:
+    """Modell im Hintergrund laden – die Oberfläche ist sofort erreichbar und zeigt „Modell lädt …“."""
+    t0 = time.perf_counter()
+    try:
+        backend = create_backend(settings)
+        log.info("Warmlaufen des Live-Modells …")
+        try:
+            backend.warmup()
+        except Exception:
+            log.exception("Warmup fehlgeschlagen (weiter ohne)")
+        final_name = (settings.final_asr_backend or "").lower()
+        final_factory = None
+        if final_name and final_name != settings.asr_backend.lower():
+            final_factory = lambda: create_backend(settings, final_name)  # noqa: E731
+        transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []),
+                                  final_factory=final_factory)
+        state.model_info = backend.info()
+        state.jobs = JobQueue(transcriber, state.store, settings, llm_factory=get_llm)
+        state.transcriber = transcriber
+        state.jobs.resume_unfinished()
+        state.startup_seconds = round(time.perf_counter() - t0, 1)
+        state.load_status = "bereit"
+        log.info("Bereit nach %.1fs – %s", state.startup_seconds, state.model_info)
+    except Exception as e:
+        state.load_status = "fehler"
+        state.load_error = str(e)
+        log.error(
+            "Spracherkennung (%s) konnte nicht geladen werden: %s\n"
+            "  → Erster Start braucht einmalig Internet für den Modell-Download (github.com), "
+            "oder den Ordner %s von einem anderen Rechner kopieren. Oberflächentest ohne Modell: ASR_BACKEND=fake.",
+            settings.asr_backend, e, settings.models_dir.resolve(),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    t0 = time.perf_counter()
     state.store = Store(settings.db_path)
     if not auth.enabled():
         log.warning("ACCESS_PASSWORD ist leer – keine Anmeldung! Nur für localhost geeignet.")
-    try:
-        backend = create_backend(settings)
-    except Exception as e:
-        log.error(
-            "Spracherkennung (%s) konnte nicht geladen werden: %s\n"
-            "  → Erster Start braucht einmalig Internet für den Modell-Download (github.com bzw. huggingface.co), "
-            "oder Modelle mit `python scripts/download_models.py` auf einem anderen Rechner laden und den Ordner "
-            "%s hierher kopieren. Zum Testen der Oberfläche ohne Modell: ASR_BACKEND=fake.",
-            settings.asr_backend, e, settings.models_dir.resolve(),
-        )
-        raise
-    log.info("Warmlaufen des Live-Modells …")
-    try:
-        backend.warmup()
-    except Exception:
-        log.exception("Warmup fehlgeschlagen (weiter ohne)")
-    final_name = (settings.final_asr_backend or "").lower()
-    final_factory = None
-    if final_name and final_name != settings.asr_backend.lower():
-        final_factory = lambda: create_backend(settings, final_name)  # noqa: E731
-    state.transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []),
-                                    final_factory=final_factory)
-    state.model_info = backend.info()
-    state.jobs = JobQueue(state.transcriber, state.store, settings)
-    state.jobs.resume_unfinished()
-    state.startup_seconds = round(time.perf_counter() - t0, 1)
-    log.info("Bereit nach %.1fs – %s", state.startup_seconds, state.model_info)
+    import threading
+    threading.Thread(target=_load_models, name="load-models", daemon=True).start()
     cleanup_task = asyncio.create_task(_retention_loop())
     yield
     cleanup_task.cancel()
     state.store.close()
+
+
+def require_ready():
+    if state.transcriber is None:
+        raise HTTPException(503, "Das Sprachmodell lädt noch – bitte einen Moment warten." if state.load_status == "lädt"
+                            else f"Sprachmodell nicht verfügbar: {state.load_error}")
 
 
 app = FastAPI(title="Mitschrift", version=__version__, lifespan=lifespan)
@@ -159,10 +181,15 @@ async def health():
     return {
         "app": settings.app_name,
         "version": __version__,
+        "ready": state.transcriber is not None,
+        "load_status": state.load_status,
+        "load_error": state.load_error,
         "model": state.model_info,
-        "models": state.transcriber.info(),
+        "models": state.transcriber.info() if state.transcriber else {},
         "startup_seconds": state.startup_seconds,
-        "jobs_pending": state.jobs.pending,
+        "jobs_pending": state.jobs.pending if state.jobs else 0,
+        "diarization": settings.diarization,
+        "live_ai_clean": settings.live_ai_clean and settings.llm_configured,
         "llm_configured": settings.llm_configured,
         "llm_model": settings.llm_model if settings.llm_configured else "",
         "live_final_pass": settings.live_final_pass,
@@ -178,7 +205,7 @@ async def list_transcripts():
     items = []
     for t in state.store.list_transcripts():
         d = t.to_dict(with_segments=False)
-        p = state.jobs.progress(t.id)
+        p = state.jobs.progress(t.id) if state.jobs else None
         if p:
             d["progress"] = {"done": p[0], "total": p[1]}
         items.append(d)
@@ -189,7 +216,7 @@ async def list_transcripts():
 async def get_transcript(tid: str):
     t = _get_or_404(tid)
     d = t.to_dict()
-    p = state.jobs.progress(tid)
+    p = state.jobs.progress(tid) if state.jobs else None
     if p:
         d["progress"] = {"done": p[0], "total": p[1]}
     d["protokoll"] = state.store.get_protokoll(tid)
@@ -211,6 +238,7 @@ async def patch_transcript(tid: str, body: TranscriptPatch):
 class SegmentPatch(BaseModel):
     text: str | None = None
     speaker: str | None = None
+    clean: str | None = None
 
 
 @app.patch("/api/transcripts/{tid}/segments/{idx}", dependencies=[Depends(require_auth)])
@@ -257,12 +285,13 @@ async def get_audio(tid: str):
 
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload(file: UploadFile = File(...), title: str = Form("")):
+    require_ready()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD:
         raise HTTPException(400, f"Dateityp {suffix or '(ohne Endung)'} wird nicht unterstützt")
     t = state.store.create_transcript(
         title=title.strip() or Path(file.filename).stem, source="upload", status="processing",
-        model=state.transcriber.backend.name, language=settings.language,
+        model=state.transcriber.final_backend.info().get("model", ""), language=settings.language,
     )
     dest = settings.audio_dir / f"{t.id}{suffix}"
     with dest.open("wb") as f:
@@ -294,20 +323,20 @@ async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: boo
 
 
 @app.get("/api/transcripts/{tid}/nova-prompt", dependencies=[Depends(require_auth)])
-async def nova_prompt(tid: str, style: str = "ergebnis"):
+async def nova_prompt(tid: str, style: str = "zusammenfassung"):
     t = _get_or_404(tid)
     return PlainTextResponse(build_prompt(t, style))
 
 
 class ProtokollRequest(BaseModel):
-    style: str = "ergebnis"
+    style: str = "zusammenfassung"
 
 
 @app.post("/api/transcripts/{tid}/protokoll", dependencies=[Depends(require_auth)])
 async def make_protokoll(tid: str, body: ProtokollRequest):
     t = _get_or_404(tid)
     if not settings.llm_configured:
-        raise HTTPException(409, "Keine Protokoll-KI konfiguriert (LLM_BASE_URL/LLM_MODEL). Nutze „In NOVA öffnen“.")
+        raise HTTPException(409, "Keine KI angebunden (LLM_BASE_URL/LLM_MODEL). Nutze „Prompt für NOVA kopieren“.")
     if not t.segments:
         raise HTTPException(400, "Transkript ist leer")
     llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_s)
@@ -363,6 +392,65 @@ async def get_bereinigt(tid: str):
     return [{"idx": s.idx, "start": s.start, "speaker": s.speaker, "text": bereinigt(s.text)} for s in t.segments]
 
 
+# --- KI-Bereinigung ------------------------------------------------------------------
+@app.get("/api/transcripts/{tid}/bereinigen-prompt", dependencies=[Depends(require_auth)])
+async def bereinigen_prompt(tid: str):
+    t = _get_or_404(tid)
+    return PlainTextResponse(bereinigung.build_prompt(t, state.store.get_setting("glossar", [])))
+
+
+def _store_clean(t, cleaned: dict[int, str]) -> dict:
+    changes, ok_n, bad_n = bereinigung.apply_cleaned(t.segments, cleaned)
+    for c in changes:
+        if c["ok"]:
+            state.store.update_segment(t.id, c["idx"], clean=c["clean"], clean_note="")
+        else:
+            state.store.update_segment(t.id, c["idx"], clean="", clean_note=c["grund"])
+    missing = len([s for s in t.segments if s.idx not in cleaned])
+    return {"uebernommen": ok_n, "verworfen": bad_n, "fehlend": missing,
+            "verworfen_details": [c for c in changes if not c["ok"]]}
+
+
+@app.post("/api/transcripts/{tid}/bereinigen", dependencies=[Depends(require_auth)])
+async def bereinigen(tid: str):
+    t = _get_or_404(tid)
+    llm = get_llm()
+    if llm is None:
+        raise HTTPException(409, "Keine KI angebunden (LLM_BASE_URL/LLM_MODEL). Nutze „Prompt für NOVA kopieren“.")
+    if not t.segments:
+        raise HTTPException(400, "Transkript ist leer")
+    loop = asyncio.get_running_loop()
+    try:
+        cleaned = await loop.run_in_executor(None, bereinigung.clean_segments, llm, t.segments,
+                                             state.store.get_setting("glossar", []))
+    except Exception as e:
+        log.exception("Bereinigung fehlgeschlagen")
+        raise HTTPException(502, f"KI-Fehler: {e}")
+    return _store_clean(t, cleaned)
+
+
+class CleanImport(BaseModel):
+    text: str
+
+
+@app.post("/api/transcripts/{tid}/bereinigen/import", dependencies=[Depends(require_auth)])
+async def bereinigen_import(tid: str, body: CleanImport):
+    """Von NOVA bereinigten Text (Zeilen mit [S12]) übernehmen – mit derselben Treue-Prüfung."""
+    t = _get_or_404(tid)
+    cleaned = bereinigung.parse_lines(body.text)
+    if not cleaned:
+        raise HTTPException(400, "Keine Zeilen mit [S…]-Nummern gefunden")
+    return _store_clean(t, cleaned)
+
+
+@app.delete("/api/transcripts/{tid}/bereinigen", dependencies=[Depends(require_auth)])
+async def bereinigen_verwerfen(tid: str):
+    t = _get_or_404(tid)
+    for s in t.segments:
+        state.store.update_segment(tid, s.idx, clean="", clean_note="")
+    return {"ok": True}
+
+
 # --- Glossar ------------------------------------------------------------------------
 class GlossarBody(BaseModel):
     eintraege: list[dict]
@@ -394,6 +482,11 @@ async def ws_live(ws: WebSocket):
     if not auth.valid_token(ws.cookies.get(auth.COOKIE)):
         await ws.close(code=4401)
         return
+    if state.transcriber is None:
+        await ws.accept()
+        await ws.send_json({"type": "error", "message": "Das Sprachmodell lädt noch – bitte in einigen Sekunden erneut starten."})
+        await ws.close(code=4503)
+        return
     await ws.accept()
     title = ws.query_params.get("title", "")
 
@@ -403,7 +496,8 @@ async def ws_live(ws: WebSocket):
         except Exception:
             pass
 
-    session = LiveSession(state.transcriber, state.store, settings, send, on_saved=_on_live_saved)
+    session = LiveSession(state.transcriber, state.store, settings, send, on_saved=_on_live_saved,
+                          llm_factory=get_llm)
     try:
         await session.start(title)
         while True:

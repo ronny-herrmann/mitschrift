@@ -1,12 +1,11 @@
 """Live-Transkription über WebSocket.
 
-Ablauf pro Sitzung:
-1. Browser schickt PCM16-Blöcke (16 kHz, mono) → werden auf Platte mitgeschrieben.
-2. VAD erkennt Satzenden → jedes fertige Sprachsegment wird sofort transkribiert
-   und als "segment"-Nachricht zurückgeschickt (Text erscheint 1–3 s nach dem Satz).
-3. Bei "stop": WAV schreiben, Live-Ergebnis sofort speichern und "final" schicken.
-   Die Verfeinerung mit dem genauen Modell läuft danach als Hintergrund-Job
-   (Status "refining" → "done"); niemand muss darauf warten.
+Drei Ebenen, wie bei guten Diktiersystemen:
+1. "partial"  – grauer Zwischentext, etwa jede Sekunde neu, solange jemand spricht
+2. "segment"  – fester Text, sobald eine Sprechpause erkannt wird (schwarz)
+3. "clean"    – KI-bereinigte Fassung des Satzes (optional, mit Treue-Prüfung)
+Nach dem Stopp: Ergebnis sofort gespeichert; Verfeinerung (genaues Modell +
+Sprechererkennung) läuft als Hintergrund-Job.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ from typing import Awaitable, Callable
 
 import numpy as np
 
+from . import bereinigung
 from .audio import SAMPLE_RATE, pcm16_bytes_to_float, write_wav_16k
 from .config import Settings
 from .pipeline import Transcriber, asr_executor
@@ -32,12 +32,14 @@ Sender = Callable[[dict], Awaitable[None]]
 
 class LiveSession:
     def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, send: Sender,
-                 on_saved: Callable[[str, bool], None] | None = None):
+                 on_saved: Callable[[str, bool], None] | None = None,
+                 llm_factory: Callable[[], object | None] | None = None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
         self.send = send
-        self.on_saved = on_saved  # (transcript_id, refine) → Job einreihen
+        self.on_saved = on_saved
+        self.llm = llm_factory() if (llm_factory and settings.live_ai_clean) else None
         self._stopped = False
         self.vad = SileroVAD()  # eigener Zustand pro Sitzung
         self.segmenter = Segmenter(**transcriber.vad_kwargs(offline=False))
@@ -50,20 +52,25 @@ class LiveSession:
         self._worker: asyncio.Task | None = None
         self._idx = 0
         self._segments: list[Segment] = []
-        self._started = 0.0
         self._compute = 0.0
+        # Zwischenergebnisse
+        self._utt = 0                 # zählt abgeschlossene Äußerungen
+        self._partial_busy = False
+        self._last_partial = 0.0
+        self._clean_tasks: set[asyncio.Task] = set()
 
     # --- Lebenszyklus ---------------------------------------------------------
     async def start(self, title: str) -> str:
         self.transcript = self.store.create_transcript(
             title=title or time.strftime("Aufnahme %d.%m.%Y %H:%M"), source="live", status="processing",
-            model=self.transcriber.backend.name, language=self.settings.language,
+            model=self.transcriber.backend.info().get("model", self.transcriber.backend.name),
+            language=self.settings.language,
         )
         self._raw_path = self.settings.audio_dir / f"{self.transcript.id}.pcm"
         self._raw = open(self._raw_path, "wb")
-        self._started = time.time()
         self._worker = asyncio.create_task(self._work())
-        await self.send({"type": "ready", "transcript_id": self.transcript.id, "title": self.transcript.title})
+        await self.send({"type": "ready", "transcript_id": self.transcript.id, "title": self.transcript.title,
+                         "ai_clean": self.llm is not None})
         return self.transcript.id
 
     async def feed(self, pcm: bytes) -> None:
@@ -77,15 +84,45 @@ class LiveSession:
         for i in range(n):
             chunk = buf[i * CHUNK:(i + 1) * CHUNK]
             for seg in self.segmenter.push(chunk, self.vad.prob(chunk)):
+                self._utt += 1
                 await self._queue.put(seg)
         self._pending = buf[n * CHUNK:]
+        self._maybe_partial()
 
+    # --- Zwischenergebnis (grau) ------------------------------------------------
+    def _maybe_partial(self) -> None:
+        s = self.settings
+        if not s.live_partials or self._partial_busy or not self.segmenter.speaking:
+            return
+        if time.monotonic() - self._last_partial < s.live_partial_interval_s:
+            return
+        if self._queue.qsize() > 0:  # feste Sätze haben Vorrang
+            return
+        cur = self.segmenter.current()
+        if not cur or len(cur[1]) < int(0.8 * SAMPLE_RATE):
+            return
+        self._partial_busy = True
+        self._last_partial = time.monotonic()
+        asyncio.create_task(self._partial(self._utt, cur[0], cur[1].copy()))
+
+    async def _partial(self, utt: int, start: int, audio: np.ndarray) -> None:
+        loop = asyncio.get_running_loop()
+        try:
+            res = await loop.run_in_executor(asr_executor(self.settings.asr_workers),
+                                             self.transcriber.backend.transcribe, audio, self.settings.language)
+            if utt == self._utt and not self._stopped and res.text.strip():
+                await self.send({"type": "partial", "start": round(start / SAMPLE_RATE, 2), "text": res.text.strip()})
+        except Exception:
+            log.exception("Zwischenergebnis fehlgeschlagen")
+        finally:
+            self._partial_busy = False
+
+    # --- Stopp ------------------------------------------------------------------
     async def stop(self) -> dict:
         """Aufnahme beenden, Ergebnis speichern und zurückgeben."""
         if self.transcript is None or self._stopped:
             return {}
         self._stopped = True
-        # Rest verarbeiten
         if len(self._pending):
             chunk = np.pad(self._pending, (0, CHUNK - len(self._pending)))
             for seg in self.segmenter.push(chunk, self.vad.prob(chunk)):
@@ -96,10 +133,11 @@ class LiveSession:
         await self._queue.put(None)
         if self._worker:
             await self._worker
+        if self._clean_tasks:
+            await asyncio.wait(self._clean_tasks, timeout=20)
         self._raw.close()
         self._raw = None
 
-        # WAV schreiben
         wav_path = self.settings.audio_dir / f"{self.transcript.id}.wav"
         raw = self._raw_path.read_bytes()
         write_wav_16k(wav_path, raw)
@@ -127,22 +165,18 @@ class LiveSession:
         return result
 
     async def abort(self) -> None:
-        """Verbindung abgebrochen: so viel wie möglich retten.
-
-        Läuft geschützt (shield), damit die Sicherung auch dann zu Ende läuft, wenn der
-        WebSocket-Handler vom Server abgebrochen wird.
-        """
+        """Verbindung abgebrochen: so viel wie möglich retten (geschützt gegen Abbruch)."""
         if self.transcript is None:
             return
         try:
             await asyncio.shield(self.stop())
         except asyncio.CancelledError:
-            pass  # Sicherung läuft im Hintergrund weiter
+            pass
         except Exception:
             log.exception("Abbruch-Sicherung fehlgeschlagen")
             self.store.update_transcript(self.transcript.id, status="error", error="Verbindung abgebrochen")
 
-    # --- Hintergrund: Segmente transkribieren ---------------------------------
+    # --- Hintergrund: feste Sätze transkribieren --------------------------------
     async def _work(self) -> None:
         loop = asyncio.get_running_loop()
         while True:
@@ -162,6 +196,7 @@ class LiveSession:
                 continue
             self._compute += time.perf_counter() - t0
             if not utt.text.strip():
+                await self.send({"type": "segment_empty"})
                 continue
             segment = self.transcriber.utterance_to_segment(self._idx, seg, utt)
             self._idx += 1
@@ -170,3 +205,24 @@ class LiveSession:
             await self.send({"type": "segment", **segment.__dict__,
                              "compute_ms": int((time.perf_counter() - t0) * 1000)})
             await self.send({"type": "status", "state": "listening", "pending": self._queue.qsize()})
+            if self.llm is not None:
+                task = asyncio.create_task(self._clean(segment))
+                self._clean_tasks.add(task)
+                task.add_done_callback(self._clean_tasks.discard)
+
+    # --- KI-Bereinigung je Satz ----------------------------------------------------
+    async def _clean(self, segment: Segment) -> None:
+        loop = asyncio.get_running_loop()
+        ctx = [s for s in self._segments if s.idx < segment.idx][-3:]
+        try:
+            cleaned = await loop.run_in_executor(
+                None, bereinigung.clean_segments, self.llm, [segment], self.transcriber.glossar_entries(), ctx)
+        except Exception as e:
+            log.warning("Live-Bereinigung fehlgeschlagen: %s", e)
+            return
+        changes, _, _ = bereinigung.apply_cleaned([segment], cleaned)
+        for ch in changes:
+            if ch["ok"] and ch["clean"] != segment.text:
+                segment.clean = ch["clean"]
+                self.store.update_segment(self.transcript.id, segment.idx, clean=segment.clean)
+                await self.send({"type": "clean", "idx": segment.idx, "text": segment.clean})
