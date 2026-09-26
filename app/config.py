@@ -1,0 +1,120 @@
+"""Konfiguration über Umgebungsvariablen (.env wird beim Start eingelesen).
+
+Alle Pfade sind relativ zum Arbeitsverzeichnis, in Docker also /data.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _load_dotenv(path: Path) -> None:
+    """Minimaler .env-Parser (keine Abhängigkeit von python-dotenv nötig)."""
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        os.environ.setdefault(key, value)
+
+
+_load_dotenv(Path(os.environ.get("MITSCHRIFT_ENV_FILE", ".env")))
+
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return _env(name, "1" if default else "0").lower() in ("1", "true", "yes", "on")
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(_env(name, str(default)))
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(_env(name, str(default)))
+
+
+@dataclass
+class Settings:
+    # --- Allgemein -------------------------------------------------------
+    app_name: str = "Mitschrift"
+    data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")))
+    models_dir: Path = field(default_factory=lambda: Path(_env("MODELS_DIR", "./models")))
+    host: str = field(default_factory=lambda: _env("HOST", "0.0.0.0"))
+    port: int = field(default_factory=lambda: _env_int("PORT", 8000))
+    log_level: str = field(default_factory=lambda: _env("LOG_LEVEL", "info"))
+
+    # --- Spracherkennung -------------------------------------------------
+    # parakeet | whisper | fake
+    asr_backend: str = field(default_factory=lambda: _env("ASR_BACKEND", "parakeet"))
+    # Sprache (ISO-Code). Whisper/Canary nutzen sie, Parakeet erkennt selbst.
+    language: str = field(default_factory=lambda: _env("LANGUAGE", "de"))
+    # cpu | cuda
+    device: str = field(default_factory=lambda: _env("DEVICE", "cpu"))
+    # Anzahl paralleler Transkriptions-Threads (CPU: 1–2, GPU: 2–4)
+    asr_workers: int = field(default_factory=lambda: _env_int("ASR_WORKERS", 1))
+
+    # Parakeet (onnx-asr): Modellname laut onnx-asr, Quantisierung, lokaler Ordner
+    parakeet_model: str = field(default_factory=lambda: _env("PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v3"))
+    parakeet_quantization: str = field(default_factory=lambda: _env("PARAKEET_QUANTIZATION", "int8"))
+
+    # faster-whisper: CTranslate2-Modell (Hugging-Face-ID oder lokaler Pfad)
+    whisper_model: str = field(
+        default_factory=lambda: _env("WHISPER_MODEL", "cstr/whisper-large-v3-turbo-german-int8_float32")
+    )
+    whisper_compute_type: str = field(default_factory=lambda: _env("WHISPER_COMPUTE_TYPE", "int8"))
+    whisper_beam_size: int = field(default_factory=lambda: _env_int("WHISPER_BEAM_SIZE", 1))
+
+    # --- Sprachaktivitätserkennung (VAD) für die Live-Segmentierung --------
+    vad_threshold: float = field(default_factory=lambda: _env_float("VAD_THRESHOLD", 0.5))
+    # Pause in ms, nach der ein Satz als abgeschlossen gilt und transkribiert wird
+    vad_min_silence_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SILENCE_MS", 700))
+    # Segment wird spätestens nach so vielen Sekunden geschnitten
+    vad_max_segment_s: float = field(default_factory=lambda: _env_float("VAD_MAX_SEGMENT_S", 15.0))
+    vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
+    vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))
+
+    # Nach Ende einer Live-Aufnahme: zweiter Durchlauf über die ganze Datei
+    live_final_pass: bool = field(default_factory=lambda: _env_bool("LIVE_FINAL_PASS", True))
+
+    # --- Protokoll-KI (optional, OpenAI-kompatibel: Ollama, vLLM, NOVA/BotBucket …) ----
+    llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", ""))
+    llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", ""))
+    llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", ""))
+    llm_timeout_s: int = field(default_factory=lambda: _env_int("LLM_TIMEOUT_S", 300))
+
+    # --- Speicherung / Löschung -----------------------------------------
+    # Audio nach Abschluss automatisch löschen (0 = behalten)
+    retention_audio_days: int = field(default_factory=lambda: _env_int("RETENTION_AUDIO_DAYS", 0))
+    retention_transcript_days: int = field(default_factory=lambda: _env_int("RETENTION_TRANSCRIPT_DAYS", 0))
+
+    # --- Zugriff ----------------------------------------------------------
+    # Einfacher Basisschutz für den Pilot; leer = kein Login. SSO folgt in Stufe 2.
+    basic_auth_user: str = field(default_factory=lambda: _env("BASIC_AUTH_USER", ""))
+    basic_auth_password: str = field(default_factory=lambda: _env("BASIC_AUTH_PASSWORD", ""))
+
+    @property
+    def audio_dir(self) -> Path:
+        return self.data_dir / "audio"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "mitschrift.sqlite3"
+
+    @property
+    def llm_configured(self) -> bool:
+        return bool(self.llm_base_url and self.llm_model)
+
+
+settings = Settings()
+settings.audio_dir.mkdir(parents=True, exist_ok=True)
+settings.models_dir.mkdir(parents=True, exist_ok=True)

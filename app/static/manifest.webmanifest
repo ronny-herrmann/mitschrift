@@ -1,0 +1,16 @@
+{
+  "name": "Mitschrift – Transkription & Protokoll",
+  "short_name": "Mitschrift",
+  "description": "Lokale Audiotranskription und Protokollerstellung für die Verwaltung",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F4F6F9",
+  "theme_color": "#0069FF",
+  "lang": "de",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/static/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

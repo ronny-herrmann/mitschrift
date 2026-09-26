@@ -1,0 +1,176 @@
+"""Live-Transkription über WebSocket.
+
+Ablauf pro Sitzung:
+1. Browser schickt PCM16-Blöcke (16 kHz, mono) → werden auf Platte mitgeschrieben.
+2. VAD erkennt Satzenden → jedes fertige Sprachsegment wird sofort transkribiert
+   und als "segment"-Nachricht zurückgeschickt (Text erscheint 1–3 s nach dem Satz).
+3. Bei "stop": WAV schreiben, optional zweiter Durchlauf über die ganze Datei mit
+   vollem Kontext, Ergebnis speichern, "final" schicken.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import time
+from pathlib import Path
+from typing import Awaitable, Callable
+
+import numpy as np
+
+from .audio import SAMPLE_RATE, float_to_pcm16_bytes, pcm16_bytes_to_float, write_wav_16k
+from .config import Settings
+from .pipeline import Transcriber, asr_executor
+from .store import Segment, Store
+from .vad import CHUNK, Segmenter, SileroVAD, SpeechSegment
+
+log = logging.getLogger(__name__)
+
+Sender = Callable[[dict], Awaitable[None]]
+
+
+class LiveSession:
+    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, send: Sender):
+        self.transcriber = transcriber
+        self.store = store
+        self.settings = settings
+        self.send = send
+        self.vad = SileroVAD()  # eigener Zustand pro Sitzung
+        self.segmenter = Segmenter(**transcriber.vad_kwargs())
+        self.transcript = None
+        self._pending = np.zeros(0, dtype=np.float32)
+        self._raw_path: Path | None = None
+        self._raw = None
+        self._samples = 0
+        self._queue: asyncio.Queue[SpeechSegment | None] = asyncio.Queue()
+        self._worker: asyncio.Task | None = None
+        self._idx = 0
+        self._segments: list[Segment] = []
+        self._started = 0.0
+        self._compute = 0.0
+
+    # --- Lebenszyklus ---------------------------------------------------------
+    async def start(self, title: str) -> str:
+        self.transcript = self.store.create_transcript(
+            title=title or time.strftime("Aufnahme %d.%m.%Y %H:%M"), source="live", status="processing",
+            model=self.transcriber.backend.name, language=self.settings.language,
+        )
+        self._raw_path = self.settings.audio_dir / f"{self.transcript.id}.pcm"
+        self._raw = open(self._raw_path, "wb")
+        self._started = time.time()
+        self._worker = asyncio.create_task(self._work())
+        await self.send({"type": "ready", "transcript_id": self.transcript.id, "title": self.transcript.title})
+        return self.transcript.id
+
+    async def feed(self, pcm: bytes) -> None:
+        if self._raw is None:
+            return
+        self._raw.write(pcm)
+        audio = pcm16_bytes_to_float(pcm)
+        self._samples += len(audio)
+        buf = np.concatenate([self._pending, audio]) if len(self._pending) else audio
+        n = len(buf) // CHUNK
+        for i in range(n):
+            chunk = buf[i * CHUNK:(i + 1) * CHUNK]
+            for seg in self.segmenter.push(chunk, self.vad.prob(chunk)):
+                await self._queue.put(seg)
+        self._pending = buf[n * CHUNK:]
+
+    async def stop(self) -> dict:
+        """Aufnahme beenden, Ergebnis speichern und zurückgeben."""
+        if self.transcript is None:
+            return {}
+        # Rest verarbeiten
+        if len(self._pending):
+            chunk = np.pad(self._pending, (0, CHUNK - len(self._pending)))
+            for seg in self.segmenter.push(chunk, self.vad.prob(chunk)):
+                await self._queue.put(seg)
+            self._pending = np.zeros(0, dtype=np.float32)
+        for seg in self.segmenter.flush():
+            await self._queue.put(seg)
+        await self._queue.put(None)
+        if self._worker:
+            await self._worker
+        self._raw.close()
+        self._raw = None
+
+        # WAV schreiben
+        wav_path = self.settings.audio_dir / f"{self.transcript.id}.wav"
+        raw = self._raw_path.read_bytes()
+        write_wav_16k(wav_path, raw)
+        self._raw_path.unlink(missing_ok=True)
+        duration = self._samples / SAMPLE_RATE
+
+        segments = self._segments
+        if self.settings.live_final_pass and duration > 0:
+            await self.send({"type": "status", "state": "finalizing"})
+            loop = asyncio.get_running_loop()
+            audio = pcm16_bytes_to_float(raw)
+            try:
+                segments, secs = await loop.run_in_executor(
+                    asr_executor(self.settings.asr_workers), self.transcriber.transcribe_audio, audio
+                )
+                self._compute += secs
+            except Exception as e:  # zweiter Durchlauf ist optional – Live-Ergebnis bleibt
+                log.exception("Zweiter Durchlauf fehlgeschlagen")
+                await self.send({"type": "warning", "message": f"Zweiter Durchlauf fehlgeschlagen: {e}"})
+
+        self.store.replace_segments(self.transcript.id, segments)
+        self.store.update_transcript(
+            self.transcript.id, status="done", audio_path=str(wav_path), duration=round(duration, 2),
+            processing_seconds=round(self._compute, 2),
+        )
+        result = {
+            "type": "final",
+            "transcript_id": self.transcript.id,
+            "duration": round(duration, 2),
+            "processing_seconds": round(self._compute, 2),
+            "segments": [s.__dict__ for s in segments],
+        }
+        await self.send(result)
+        return result
+
+    async def abort(self) -> None:
+        """Verbindung abgebrochen: so viel wie möglich retten.
+
+        Läuft geschützt (shield), damit die Sicherung auch dann zu Ende läuft, wenn der
+        WebSocket-Handler vom Server abgebrochen wird.
+        """
+        if self.transcript is None:
+            return
+        try:
+            await asyncio.shield(self.stop())
+        except asyncio.CancelledError:
+            pass  # Sicherung läuft im Hintergrund weiter
+        except Exception:
+            log.exception("Abbruch-Sicherung fehlgeschlagen")
+            self.store.update_transcript(self.transcript.id, status="error", error="Verbindung abgebrochen")
+
+    # --- Hintergrund: Segmente transkribieren ---------------------------------
+    async def _work(self) -> None:
+        loop = asyncio.get_running_loop()
+        while True:
+            seg = await self._queue.get()
+            if seg is None:
+                break
+            await self.send({"type": "status", "state": "transcribing", "pending": self._queue.qsize()})
+            t0 = time.perf_counter()
+            try:
+                utt = await loop.run_in_executor(
+                    asr_executor(self.settings.asr_workers),
+                    self.transcriber.backend.transcribe, seg.audio, self.settings.language,
+                )
+            except Exception as e:
+                log.exception("Transkription eines Segments fehlgeschlagen")
+                await self.send({"type": "error", "message": f"Transkription fehlgeschlagen: {e}"})
+                continue
+            self._compute += time.perf_counter() - t0
+            if not utt.text.strip():
+                continue
+            segment = self.transcriber.utterance_to_segment(self._idx, seg, utt)
+            self._idx += 1
+            self._segments.append(segment)
+            self.store.append_segment(self.transcript.id, segment)
+            await self.send({"type": "segment", **segment.__dict__,
+                             "compute_ms": int((time.perf_counter() - t0) * 1000)})
+            await self.send({"type": "status", "state": "listening", "pending": self._queue.qsize()})

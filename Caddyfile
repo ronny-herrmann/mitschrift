@@ -1,0 +1,9 @@
+# HTTPS mit Caddy. Standard: internes Zertifikat (Caddy-eigene CA).
+# Für ein städtisches Zertifikat stattdessen:
+#   tls /certs/mitschrift.crt /certs/mitschrift.key
+# und die Dateien im docker-compose als Volume einhängen.
+{$MITSCHRIFT_HOST:localhost} {
+	tls internal
+	encode gzip
+	reverse_proxy app:8000
+}

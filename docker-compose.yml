@@ -1,0 +1,41 @@
+# Mitschrift: App + Caddy (HTTPS, weil Browser den Mikrofonzugriff nur über HTTPS/localhost erlauben)
+#
+#   cp .env.example .env      (MITSCHRIFT_HOST anpassen, z. B. mitschrift.stadt.local)
+#   docker compose up -d --build
+#   → https://<MITSCHRIFT_HOST>   (Caddy erzeugt ein Zertifikat seiner internen CA; siehe README)
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /data
+      MODELS_DIR: /models
+    volumes:
+      - ./data:/data
+      - ./models:/models
+    expose:
+      - "8000"
+    # Nur für Tests ohne Caddy direkt erreichbar machen:
+    # ports:
+    #   - "8000:8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    environment:
+      MITSCHRIFT_HOST: ${MITSCHRIFT_HOST:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

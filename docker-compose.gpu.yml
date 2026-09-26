@@ -1,0 +1,19 @@
+# GPU-Variante (Stufe 2, noch ungetestet): docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Voraussetzung: NVIDIA-Treiber + NVIDIA Container Toolkit auf dem Host.
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    environment:
+      DEVICE: cuda
+      ASR_WORKERS: 3
+      PARAKEET_QUANTIZATION: ""
+      WHISPER_COMPUTE_TYPE: float16
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
