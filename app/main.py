@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import secrets
 import shutil
 import time
 from contextlib import asynccontextmanager
@@ -12,12 +11,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__
+from . import auth
 from .asr import create_backend
 from .config import settings
 from .export import to_docx, to_markdown, to_srt, to_txt
@@ -49,25 +48,33 @@ state = State()
 async def lifespan(app: FastAPI):
     t0 = time.perf_counter()
     state.store = Store(settings.db_path)
+    if not auth.enabled():
+        log.warning("ACCESS_PASSWORD ist leer – keine Anmeldung! Nur für localhost geeignet.")
     try:
         backend = create_backend(settings)
     except Exception as e:
         log.error(
             "Spracherkennung (%s) konnte nicht geladen werden: %s\n"
-            "  → Erster Start braucht einmalig Internet für den Modell-Download (huggingface.co), "
+            "  → Erster Start braucht einmalig Internet für den Modell-Download (github.com bzw. huggingface.co), "
             "oder Modelle mit `python scripts/download_models.py` auf einem anderen Rechner laden und den Ordner "
             "%s hierher kopieren. Zum Testen der Oberfläche ohne Modell: ASR_BACKEND=fake.",
             settings.asr_backend, e, settings.models_dir.resolve(),
         )
         raise
-    state.transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []))
-    log.info("Warmlaufen des Modells …")
+    log.info("Warmlaufen des Live-Modells …")
     try:
         backend.warmup()
     except Exception:
         log.exception("Warmup fehlgeschlagen (weiter ohne)")
+    final_name = (settings.final_asr_backend or "").lower()
+    final_factory = None
+    if final_name and final_name != settings.asr_backend.lower():
+        final_factory = lambda: create_backend(settings, final_name)  # noqa: E731
+    state.transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []),
+                                    final_factory=final_factory)
     state.model_info = backend.info()
     state.jobs = JobQueue(state.transcriber, state.store, settings)
+    state.jobs.resume_unfinished()
     state.startup_seconds = round(time.perf_counter() - t0, 1)
     log.info("Bereit nach %.1fs – %s", state.startup_seconds, state.model_info)
     cleanup_task = asyncio.create_task(_retention_loop())
@@ -78,18 +85,40 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Mitschrift", version=__version__, lifespan=lifespan)
 
-# --- optionaler Basisschutz (Pilot) ---------------------------------------------
-_basic = HTTPBasic(auto_error=False)
+# --- Anmeldung ---------------------------------------------------------------------
+async def require_auth(request: Request):
+    if not auth.valid_token(request.cookies.get(auth.COOKIE)):
+        raise HTTPException(status_code=401, detail="Anmeldung erforderlich")
 
 
-async def require_auth(request: Request, creds: HTTPBasicCredentials | None = Depends(_basic)):
-    if not settings.basic_auth_user:
-        return
-    ok = creds is not None and secrets.compare_digest(creds.username, settings.basic_auth_user) and secrets.compare_digest(
-        creds.password, settings.basic_auth_password
-    )
-    if not ok:
-        raise HTTPException(status_code=401, detail="Anmeldung erforderlich", headers={"WWW-Authenticate": "Basic"})
+class LoginBody(BaseModel):
+    password: str
+
+
+@app.post("/api/login")
+async def login(body: LoginBody, request: Request):
+    client = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0].strip()
+    if auth.locked(client):
+        raise HTTPException(429, "Zu viele Fehlversuche – bitte 15 Minuten warten.")
+    if not auth.enabled() or not auth.check_password(body.password, client):
+        await asyncio.sleep(1.0)
+        raise HTTPException(401, "Passwort falsch")
+    resp = Response(status_code=204)
+    resp.set_cookie(auth.COOKIE, auth.make_token(), max_age=settings.session_hours * 3600, httponly=True,
+                    samesite="strict", secure=settings.cookie_secure, path="/")
+    return resp
+
+
+@app.post("/api/logout")
+async def logout():
+    resp = Response(status_code=204)
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 
 # --- Hilfsfunktionen ---------------------------------------------------------------
@@ -106,35 +135,40 @@ async def _retention_loop():
             _apply_retention()
         except Exception:
             log.exception("Löschlauf fehlgeschlagen")
-        await asyncio.sleep(3600)
+        await asyncio.sleep(600)
 
 
 def _apply_retention():
     now = datetime.now(timezone.utc)
     for t in state.store.list_transcripts(limit=10_000):
+        if t.status in ("processing", "refining"):
+            continue
         created = datetime.fromisoformat(t.created_at)
         age = now - created
-        if settings.retention_transcript_days and age > timedelta(days=settings.retention_transcript_days):
+        if settings.retention_transcript_hours and age > timedelta(hours=settings.retention_transcript_hours):
             state.store.delete_transcript(t.id)
             log.info("Transkript %s nach Frist gelöscht", t.id)
-        elif settings.retention_audio_days and t.audio_path and age > timedelta(days=settings.retention_audio_days):
+        elif settings.retention_audio_hours and t.audio_path and age > timedelta(hours=settings.retention_audio_hours):
             state.store.delete_audio(t.id)
             log.info("Audio zu %s nach Frist gelöscht", t.id)
 
 
 # --- API ----------------------------------------------------------------------------
-@app.get("/api/health")
+@app.get("/api/health", dependencies=[Depends(require_auth)])
 async def health():
     return {
         "app": settings.app_name,
         "version": __version__,
         "model": state.model_info,
+        "models": state.transcriber.info(),
         "startup_seconds": state.startup_seconds,
         "jobs_pending": state.jobs.pending,
         "llm_configured": settings.llm_configured,
         "llm_model": settings.llm_model if settings.llm_configured else "",
         "live_final_pass": settings.live_final_pass,
-        "retention": {"audio_days": settings.retention_audio_days, "transcript_days": settings.retention_transcript_days},
+        "retention": {"audio_hours": settings.retention_audio_hours, "transcript_hours": settings.retention_transcript_hours,
+                      "audio_delete_after_done": settings.audio_delete_after_done},
+        "auth": auth.enabled(),
         "styles": STYLES,
     }
 
@@ -348,27 +382,16 @@ async def put_glossar(body: GlossarBody):
 
 
 # --- Live-WebSocket --------------------------------------------------------------------
-def _ws_authorized(ws: WebSocket) -> bool:
-    """Browser schicken die gemerkten Basic-Auth-Daten meist auch beim WebSocket-Handshake mit;
-    zur Sicherheit wird zusätzlich ein Token-Query-Parameter (user:passwort) akzeptiert."""
-    import base64
-
-    expected = f"{settings.basic_auth_user}:{settings.basic_auth_password}"
-    auth = ws.headers.get("authorization", "")
-    if auth.lower().startswith("basic "):
-        try:
-            decoded = base64.b64decode(auth[6:]).decode("utf-8")
-        except Exception:
-            decoded = ""
-        if secrets.compare_digest(decoded, expected):
-            return True
-    token = ws.query_params.get("token", "")
-    return bool(token) and secrets.compare_digest(token, expected)
+def _on_live_saved(tid: str, refine: bool) -> None:
+    if refine:
+        state.jobs.enqueue(tid)
+    elif settings.audio_delete_after_done:
+        state.store.delete_audio(tid)
 
 
 @app.websocket("/ws/live")
 async def ws_live(ws: WebSocket):
-    if settings.basic_auth_user and not _ws_authorized(ws):
+    if not auth.valid_token(ws.cookies.get(auth.COOKIE)):
         await ws.close(code=4401)
         return
     await ws.accept()
@@ -380,7 +403,7 @@ async def ws_live(ws: WebSocket):
         except Exception:
             pass
 
-    session = LiveSession(state.transcriber, state.store, settings, send)
+    session = LiveSession(state.transcriber, state.store, settings, send, on_saved=_on_live_saved)
     try:
         await session.start(title)
         while True:
@@ -409,9 +432,16 @@ async def ws_live(ws: WebSocket):
 
 
 # --- Web-Oberfläche -------------------------------------------------------------------
-@app.get("/", dependencies=[Depends(require_auth)])
-async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+@app.get("/")
+async def index(request: Request):
+    if not auth.valid_token(request.cookies.get(auth.COOKIE)):
+        return RedirectResponse("/login", status_code=303)
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/login")
+async def login_page():
+    return FileResponse(STATIC_DIR / "login.html")
 
 
 @app.get("/sw.js")

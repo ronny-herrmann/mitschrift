@@ -33,6 +33,7 @@ class WhisperBackend(ASRBackend):
         self.compute_type = compute_type
         self.device = device
         self.beam_size = beam_size
+        self._hotwords: str | None = None
         self._model = WhisperModel(
             model,
             device=device,
@@ -41,15 +42,24 @@ class WhisperBackend(ASRBackend):
             cpu_threads=threads or max(1, (os.cpu_count() or 2)),
         )
 
+    def set_hotwords(self, words: list[str]) -> None:
+        """Glossar-Begriffe als Hinweis an das Modell (verbessert Eigennamen und Fachwörter)."""
+        words = [w for w in dict.fromkeys(w.strip() for w in words) if w]
+        self._hotwords = ", ".join(words[:60]) or None
+
     def transcribe(self, audio: np.ndarray, language: str | None = "de") -> Utterance:
         segments, _info = self._model.transcribe(
             audio.astype(np.float32),
             language=language or None,
             beam_size=self.beam_size,
             word_timestamps=True,
-            vad_filter=False,          # Segmentierung übernimmt unsere VAD
+            vad_filter=False,                  # Segmentierung übernimmt unsere VAD
             condition_on_previous_text=False,  # verhindert Wiederholungs-Halluzinationen
-            temperature=0.0,
+            temperature=[0.0, 0.2, 0.4],       # bei unsicherem Ergebnis neu versuchen
+            no_speech_threshold=0.6,
+            log_prob_threshold=-1.0,
+            compression_ratio_threshold=2.2,   # verwirft Endlosschleifen-Text
+            hotwords=self._hotwords,
         )
         texts: list[str] = []
         words: list[Word] = []

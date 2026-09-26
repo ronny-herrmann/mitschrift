@@ -63,9 +63,12 @@ class Settings:
     # Anzahl paralleler Transkriptions-Threads (CPU: 1–2, GPU: 2–4)
     asr_workers: int = field(default_factory=lambda: _env_int("ASR_WORKERS", 1))
 
-    # Parakeet (onnx-asr): Modellname laut onnx-asr, Quantisierung, lokaler Ordner
-    parakeet_model: str = field(default_factory=lambda: _env("PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v3"))
-    parakeet_quantization: str = field(default_factory=lambda: _env("PARAKEET_QUANTIZATION", "int8"))
+    # Modell für den genauen Durchlauf (Uploads + Verfeinerung nach Live-Aufnahme).
+    # Leer = gleiches Modell wie live. Empfehlung für den Test: whisper (deutsch-feingetunt).
+    final_asr_backend: str = field(default_factory=lambda: _env("FINAL_ASR_BACKEND", ""))
+
+    # Parakeet (sherpa-onnx): optional fester Ordner mit dem Modell (sonst MODELS_DIR, Auto-Download)
+    parakeet_model_dir: str = field(default_factory=lambda: _env("PARAKEET_MODEL_DIR", ""))
 
     # faster-whisper: CTranslate2-Modell (Hugging-Face-ID oder lokaler Pfad)
     whisper_model: str = field(
@@ -83,7 +86,11 @@ class Settings:
     vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
     vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))
 
-    # Nach Ende einer Live-Aufnahme: zweiter Durchlauf über die ganze Datei
+    # Offline (Upload/Verfeinerung): längere Segmente = mehr Kontext = bessere Erkennung
+    offline_max_segment_s: float = field(default_factory=lambda: _env_float("OFFLINE_MAX_SEGMENT_S", 28.0))
+    offline_min_silence_ms: int = field(default_factory=lambda: _env_int("OFFLINE_MIN_SILENCE_MS", 1200))
+
+    # Nach Ende einer Live-Aufnahme: Verfeinerung über die ganze Datei (läuft im Hintergrund)
     live_final_pass: bool = field(default_factory=lambda: _env_bool("LIVE_FINAL_PASS", True))
 
     # --- Protokoll-KI (optional, OpenAI-kompatibel: Ollama, vLLM, NOVA/BotBucket …) ----
@@ -92,15 +99,21 @@ class Settings:
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", ""))
     llm_timeout_s: int = field(default_factory=lambda: _env_int("LLM_TIMEOUT_S", 300))
 
-    # --- Speicherung / Löschung -----------------------------------------
-    # Audio nach Abschluss automatisch löschen (0 = behalten)
-    retention_audio_days: int = field(default_factory=lambda: _env_int("RETENTION_AUDIO_DAYS", 0))
-    retention_transcript_days: int = field(default_factory=lambda: _env_int("RETENTION_TRANSCRIPT_DAYS", 0))
+    # --- Speicherung / Löschung (Datensparsamkeit) ------------------------
+    # Audio direkt nach fertiger Transkription löschen (dann kein Abspielen/Nachhören möglich)
+    audio_delete_after_done: bool = field(default_factory=lambda: _env_bool("AUDIO_DELETE_AFTER_DONE", False))
+    # Automatische Löschfristen in Stunden (0 = keine Frist)
+    retention_audio_hours: int = field(default_factory=lambda: _env_int("RETENTION_AUDIO_HOURS", 0))
+    retention_transcript_hours: int = field(default_factory=lambda: _env_int("RETENTION_TRANSCRIPT_HOURS", 0))
 
     # --- Zugriff ----------------------------------------------------------
-    # Einfacher Basisschutz für den Pilot; leer = kein Login. SSO folgt in Stufe 2.
-    basic_auth_user: str = field(default_factory=lambda: _env("BASIC_AUTH_USER", ""))
-    basic_auth_password: str = field(default_factory=lambda: _env("BASIC_AUTH_PASSWORD", ""))
+    # Passwort für die Anmeldung (leer = kein Login, nur für localhost!). SSO folgt in Stufe 2.
+    access_password: str = field(default_factory=lambda: _env("ACCESS_PASSWORD", ""))
+    # Geheimer Schlüssel für Sitzungs-Cookies (wird bei leerem Wert zufällig erzeugt → Neustart = neu anmelden)
+    session_secret: str = field(default_factory=lambda: _env("SESSION_SECRET", ""))
+    session_hours: int = field(default_factory=lambda: _env_int("SESSION_HOURS", 12))
+    # Cookie nur über HTTPS senden (hinter Caddy: 1)
+    cookie_secure: bool = field(default_factory=lambda: _env_bool("COOKIE_SECURE", False))
 
     @property
     def audio_dir(self) -> Path:

@@ -136,9 +136,11 @@ def test_live_websocket(client):
         assert [s["idx"] for s in segments] == [0, 1, 2]
         assert final["transcript_id"] == tid
         assert 12 < final["duration"] < 13
-        assert len(final["segments"]) == 3  # zweiter Durchlauf
-    d = client.get(f"/api/transcripts/{tid}").json()
+        assert final["refining"] is True
+        assert len(final["segments"]) == 3  # Live-Ergebnis sofort gespeichert
+    d = wait_done(client, tid)  # Verfeinerung im Hintergrund
     assert d["status"] == "done" and d["source"] == "live" and d["has_audio"]
+    assert len(d["segments"]) == 3
     audio = client.get(f"/api/transcripts/{tid}/audio")
     assert audio.status_code == 200 and audio.content[:4] == b"RIFF"
     client.delete(f"/api/transcripts/{tid}")
@@ -152,10 +154,33 @@ def test_live_disconnect_is_saved(client):
         for i in range(0, len(pcm) // 2, 3200):
             ws.send_bytes(pcm[i:i + 3200])
         # Verbindung einfach schließen → Server sichert
-    for _ in range(50):
-        d = client.get(f"/api/transcripts/{tid}").json()
-        if d["status"] == "done":
-            break
-        time.sleep(0.2)
+    d = wait_done(client, tid)
     assert d["status"] == "done" and d["duration"] > 5
     client.delete(f"/api/transcripts/{tid}")
+
+
+def test_login_required_when_password_set(client, monkeypatch):
+    from app import auth
+    from app.config import settings
+    monkeypatch.setattr(settings, "access_password", "geheim-123")
+    client.cookies.clear()
+    assert client.get("/api/transcripts").status_code == 401
+    r = client.get("/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login"
+    assert client.post("/api/login", json={"password": "falsch"}).status_code == 401
+    r = client.post("/api/login", json={"password": "geheim-123"})
+    assert r.status_code == 204 and auth.COOKIE in r.cookies
+    client.cookies.set(auth.COOKIE, r.cookies[auth.COOKIE])
+    assert client.get("/api/transcripts").status_code == 200
+    with client.websocket_connect("/ws/live") as ws:
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_text(json.dumps({"type": "stop"}))
+        while ws.receive_json()["type"] != "final":
+            pass
+    client.cookies.clear()
+    import pytest
+    from starlette.websockets import WebSocketDisconnect
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws/live") as ws:
+            ws.receive_json()
+    auth._failures.clear()

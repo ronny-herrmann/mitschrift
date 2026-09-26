@@ -41,6 +41,7 @@ h2 { font-size: 1.15rem; margin: 1.25rem 0 .5rem; }
 .nav a.active, .nav a:hover { background: var(--blue-soft); color: var(--blue-dark); }
 .nav-ico { display: none; }
 .sysinfo { font-size: .78rem; color: var(--muted); max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.logout { font-size: .8rem; color: var(--muted); }
 .sysinfo .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: .35rem; }
 .sysinfo.err .dot { background: var(--danger); }
 
@@ -175,6 +176,7 @@ textarea.md { width: 100%; min-height: 320px; font-family: ui-monospace, SFMono-
 @media (max-width: 720px) {
   .topbar { padding: .5rem .8rem; gap: .5rem; }
   .brand-sub, .sysinfo { display: none; }
+  .logout { margin-left: auto; }
   .nav { position: fixed; left: 0; right: 0; bottom: 0; background: var(--card); border-top: 1px solid var(--line); margin: 0; padding: .3rem .4rem calc(.3rem + env(safe-area-inset-bottom)); justify-content: space-around; z-index: 20; }
   .nav a { display: flex; flex-direction: column; align-items: center; gap: .1rem; font-size: .72rem; padding: .3rem .6rem; }
   .nav-ico { display: block; font-size: 1.1rem; }

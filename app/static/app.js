@@ -23,6 +23,7 @@
   };
   const api = async (path, opts = {}) => {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }, ...opts });
+    if (r.status === 401) { location.href = '/login'; throw new Error('Bitte anmelden'); }
     if (!r.ok) {
       let msg = r.statusText;
       try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch { }
@@ -38,8 +39,15 @@
   async function loadHealth() {
     try {
       health = await api('/api/health');
-      const m = health.model || {};
-      $('#sysinfo').innerHTML = `<span class="dot"></span>${esc(m.backend)} · ${esc(m.model || '')}${m.quantization ? ' · ' + esc(m.quantization) : ''}${m.device ? ' · ' + esc(m.device) : ''}`;
+      const ms = health.models || {}, live = ms.live || health.model || {}, fin = ms.final || live;
+      const finTxt = fin.model && fin.model !== live.model ? ` · genau: ${esc(fin.model)}` : '';
+      $('#sysinfo').innerHTML = `<span class="dot"></span>live: ${esc(live.model || live.backend)}${finTxt}`;
+      $('#sysinfo').title = `Live: ${JSON.stringify(live)}\nGenau: ${JSON.stringify(fin)}\nStatus genaues Modell: ${ms.final_status || '-'}`;
+      if (health.auth && !$('#logout')) {
+        const lo = document.createElement('a'); lo.id = 'logout'; lo.href = '#'; lo.className = 'logout'; lo.textContent = 'Abmelden';
+        lo.addEventListener('click', async (e) => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; });
+        $('.topbar').appendChild(lo);
+      }
       $('#sysinfo').classList.remove('err');
     } catch (e) {
       $('#sysinfo').innerHTML = `<span class="dot"></span>Server nicht erreichbar`;
@@ -137,7 +145,8 @@
     function onMessage(m) {
       if (m.type === 'ready') { setStatus('Hört zu …'); }
       else if (m.type === 'status') {
-        if (m.state === 'transcribing') setStatus(`Transkribiert … (${m.pending || 0} wartend)`);
+        if (m.state === 'transcribing' && m.pending > 3) setStatus(`Transkribiert … (${m.pending} Sätze warten – Server ausgelastet)`);
+        else if (m.state === 'transcribing') setStatus(`Transkribiert … (${m.pending || 0} wartend)`);
         else if (m.state === 'listening') setStatus('Hört zu …');
         else if (m.state === 'finalizing') setStatus('Zweiter Durchlauf über die ganze Aufnahme …');
       }
@@ -149,9 +158,9 @@
       }
       else if (m.type === 'final') {
         btn.disabled = !consent.checked;
-        setStatus('Fertig.');
+        setStatus(m.refining ? 'Gespeichert – Verfeinerung mit dem genauen Modell läuft im Hintergrund.' : 'Fertig.');
         const rtf = m.duration ? (m.processing_seconds / m.duration) : 0;
-        $('#rec-final-info').textContent = `${fmt(m.duration)} Audio, Rechenzeit gesamt ${m.processing_seconds.toFixed(1)} s (${rtf < 1 ? (1 / Math.max(rtf, 0.001)).toFixed(0) + '× schneller als Echtzeit' : 'RTF ' + rtf.toFixed(2)}), ${m.segments.length} Segmente.`;
+        $('#rec-final-info').textContent = `${fmt(m.duration)} Audio, Live-Rechenzeit ${m.processing_seconds.toFixed(1)} s (${rtf < 1 ? (1 / Math.max(rtf, 0.001)).toFixed(0) + '× schneller als Echtzeit' : 'RTF ' + rtf.toFixed(2)}), ${m.segments.length} Segmente.${m.refining ? ' Das Transkript wird gerade mit dem genauen Modell verfeinert und aktualisiert sich automatisch.' : ''}`;
         $('#rec-final-link').href = `#/t/${m.transcript_id}`;
         $('#rec-final').classList.remove('hidden');
         try { ws.close(); } catch { }
@@ -216,7 +225,7 @@
       const rows = items.filter((t) => !q || t.title.toLowerCase().includes(q));
       if (!rows.length) { list.innerHTML = '<div class="empty-state">Noch keine Transkripte.</div>'; return; }
       list.innerHTML = rows.map((t) => {
-        const st = t.status === 'done' ? '<span class="badge ok">fertig</span>' : t.status === 'error' ? `<span class="badge danger" title="${esc(t.error)}">Fehler</span>` : '<span class="badge warn">in Arbeit</span>';
+        const st = t.status === 'done' ? '<span class="badge ok">fertig</span>' : t.status === 'error' ? `<span class="badge danger" title="${esc(t.error)}">Fehler</span>` : t.status === 'refining' ? '<span class="badge blue">wird verfeinert</span>' : '<span class="badge warn">in Arbeit</span>';
         const rtf = t.duration && t.processing_seconds ? ` · ${(t.duration / t.processing_seconds).toFixed(0)}× Echtzeit` : '';
         return `<a class="item" href="#/t/${t.id}"><span class="ttl">${esc(t.title)}</span>${st}<span class="sub">${fmtDate(t.created_at)} · ${fmt(t.duration)} · ${t.source === 'live' ? 'Live' : 'Upload'} · ${esc(t.model)}${rtf}</span><span class="sub">${t.has_audio ? 'mit Audio' : 'ohne Audio'}</span></a>`;
       }).join('');
@@ -224,7 +233,7 @@
     const load = async () => { items = await api('/api/transcripts'); draw(); };
     search.addEventListener('input', draw);
     await load();
-    const poll = setInterval(() => { if (items.some((t) => t.status === 'processing')) load().catch(() => { }); }, 3000);
+    const poll = setInterval(() => { if (items.some((t) => t.status === 'processing' || t.status === 'refining')) load().catch(() => { }); }, 3000);
     return () => clearInterval(poll);
   }
 
@@ -261,7 +270,7 @@
           </div>
         </div>
         <div class="meta">
-          <span class="badge ${t.status === 'done' ? 'ok' : t.status === 'error' ? 'danger' : 'warn'}">${t.status === 'done' ? 'fertig' : t.status === 'error' ? 'Fehler' : 'in Arbeit'}</span>
+          <span class="badge ${t.status === 'done' ? 'ok' : t.status === 'error' ? 'danger' : t.status === 'refining' ? 'blue' : 'warn'}">${t.status === 'done' ? 'fertig' : t.status === 'error' ? 'Fehler' : t.status === 'refining' ? 'wird verfeinert …' + (t.progress ? ` ${t.progress.done}/${t.progress.total}` : '') : 'in Arbeit' + (t.progress ? ` ${t.progress.done}/${t.progress.total}` : '')}</span>
           <span class="badge">${fmtDate(t.created_at)}</span>
           <span class="badge">${fmt(t.duration)} Audio</span>
           <span class="badge">${t.source === 'live' ? 'Live-Aufnahme' : 'Upload'}</span>
@@ -461,8 +470,13 @@
     draw();
     // Bei laufender Verarbeitung nachladen
     const poll = setInterval(async () => {
-      if (t.status !== 'processing') return;
-      try { const n = await api(`/api/transcripts/${id}`); if (n.status !== 'processing') { t = n; draw(); } } catch { }
+      if (t.status !== 'processing' && t.status !== 'refining') return;
+      if (document.activeElement && document.activeElement.isContentEditable) return; // nicht beim Tippen neu zeichnen
+      try {
+        const n = await api(`/api/transcripts/${id}`);
+        const changed = n.status !== t.status || JSON.stringify(n.progress) !== JSON.stringify(t.progress);
+        t = n; if (changed) { draw(); if (n.status === 'done') toast('Transkript fertig verfeinert'); }
+      } catch { }
     }, 2000);
     return () => { clearInterval(poll); };
   }

@@ -4,8 +4,9 @@ Ablauf pro Sitzung:
 1. Browser schickt PCM16-Blöcke (16 kHz, mono) → werden auf Platte mitgeschrieben.
 2. VAD erkennt Satzenden → jedes fertige Sprachsegment wird sofort transkribiert
    und als "segment"-Nachricht zurückgeschickt (Text erscheint 1–3 s nach dem Satz).
-3. Bei "stop": WAV schreiben, optional zweiter Durchlauf über die ganze Datei mit
-   vollem Kontext, Ergebnis speichern, "final" schicken.
+3. Bei "stop": WAV schreiben, Live-Ergebnis sofort speichern und "final" schicken.
+   Die Verfeinerung mit dem genauen Modell läuft danach als Hintergrund-Job
+   (Status "refining" → "done"); niemand muss darauf warten.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from typing import Awaitable, Callable
 
 import numpy as np
 
-from .audio import SAMPLE_RATE, float_to_pcm16_bytes, pcm16_bytes_to_float, write_wav_16k
+from .audio import SAMPLE_RATE, pcm16_bytes_to_float, write_wav_16k
 from .config import Settings
 from .pipeline import Transcriber, asr_executor
 from .store import Segment, Store
@@ -30,13 +31,16 @@ Sender = Callable[[dict], Awaitable[None]]
 
 
 class LiveSession:
-    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, send: Sender):
+    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, send: Sender,
+                 on_saved: Callable[[str, bool], None] | None = None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
         self.send = send
+        self.on_saved = on_saved  # (transcript_id, refine) → Job einreihen
+        self._stopped = False
         self.vad = SileroVAD()  # eigener Zustand pro Sitzung
-        self.segmenter = Segmenter(**transcriber.vad_kwargs())
+        self.segmenter = Segmenter(**transcriber.vad_kwargs(offline=False))
         self.transcript = None
         self._pending = np.zeros(0, dtype=np.float32)
         self._raw_path: Path | None = None
@@ -78,8 +82,9 @@ class LiveSession:
 
     async def stop(self) -> dict:
         """Aufnahme beenden, Ergebnis speichern und zurückgeben."""
-        if self.transcript is None:
+        if self.transcript is None or self._stopped:
             return {}
+        self._stopped = True
         # Rest verarbeiten
         if len(self._pending):
             chunk = np.pad(self._pending, (0, CHUNK - len(self._pending)))
@@ -101,31 +106,22 @@ class LiveSession:
         self._raw_path.unlink(missing_ok=True)
         duration = self._samples / SAMPLE_RATE
 
+        refine = self.settings.live_final_pass and duration >= 1.0
         segments = self._segments
-        if self.settings.live_final_pass and duration > 0:
-            await self.send({"type": "status", "state": "finalizing"})
-            loop = asyncio.get_running_loop()
-            audio = pcm16_bytes_to_float(raw)
-            try:
-                segments, secs = await loop.run_in_executor(
-                    asr_executor(self.settings.asr_workers), self.transcriber.transcribe_audio, audio
-                )
-                self._compute += secs
-            except Exception as e:  # zweiter Durchlauf ist optional – Live-Ergebnis bleibt
-                log.exception("Zweiter Durchlauf fehlgeschlagen")
-                await self.send({"type": "warning", "message": f"Zweiter Durchlauf fehlgeschlagen: {e}"})
-
         self.store.replace_segments(self.transcript.id, segments)
         self.store.update_transcript(
-            self.transcript.id, status="done", audio_path=str(wav_path), duration=round(duration, 2),
-            processing_seconds=round(self._compute, 2),
+            self.transcript.id, status="refining" if refine else "done", audio_path=str(wav_path),
+            duration=round(duration, 2), processing_seconds=round(self._compute, 2),
         )
+        if self.on_saved:
+            self.on_saved(self.transcript.id, refine)
         result = {
             "type": "final",
             "transcript_id": self.transcript.id,
             "duration": round(duration, 2),
             "processing_seconds": round(self._compute, 2),
-            "segments": [s.__dict__ for s in segments],
+            "refining": refine,
+            "segments": [seg.__dict__ for seg in segments],
         }
         await self.send(result)
         return result

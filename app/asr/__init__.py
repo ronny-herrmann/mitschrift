@@ -22,12 +22,7 @@ def create_backend(s: Settings, name: str | None = None) -> ASRBackend:
     if name == "parakeet":
         from .parakeet import ParakeetBackend
 
-        return ParakeetBackend(
-            model=s.parakeet_model,
-            quantization=s.parakeet_quantization,
-            models_dir=s.models_dir,
-            device=s.device,
-        )
+        return ParakeetBackend(models_dir=s.models_dir, device=s.device, model_dir=s.parakeet_model_dir or None)
     if name == "whisper":
         from .whisper import WhisperBackend
 
@@ -38,4 +33,4 @@ def create_backend(s: Settings, name: str | None = None) -> ASRBackend:
             device=s.device,
             beam_size=s.whisper_beam_size,
         )
-    raise ValueError(f"Unbekanntes ASR_BACKEND: {name} (erlaubt: parakeet, whisper, fake)")
+    raise ValueError(f"Unbekanntes Backend: {name} (erlaubt: parakeet, whisper, fake)")
