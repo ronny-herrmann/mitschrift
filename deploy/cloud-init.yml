@@ -1,6 +1,6 @@
 #cloud-config
 # Beim Anlegen des Hetzner-Servers unter „Cloud config“ einfügen.
-# Vorher nur die drei Werte in settings.env anpassen (REPO_URL, ACCESS_PASSWORD, ACME_EMAIL).
+# Vorher nur ACCESS_PASSWORD (und ggf. ACME_EMAIL) anpassen.
 # Danach dauert die Einrichtung ca. 10 Minuten; die Adressen stehen dann in /root/MITSCHRIFT.txt
 # (bzw. Test: https://test.<IP-mit-Bindestrichen>.sslip.io, Produktiv: https://<IP-mit-Bindestrichen>.sslip.io).
 
@@ -8,7 +8,7 @@ write_files:
   - path: /opt/mitschrift/settings.env
     permissions: "0600"
     content: |
-      REPO_URL=https://github.com/DEIN-KONTO/mitschrift.git
+      REPO_URL=https://github.com/ronny-herrmann/mitschrift.git
       ACCESS_PASSWORD=HIER-EIN-LANGES-PASSWORT
       ACME_EMAIL=deine@email.de
       # Nur bei privatem Repository: Token mit reinem Lese-Recht auf dieses eine Repository
