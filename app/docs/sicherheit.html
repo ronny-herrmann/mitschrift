@@ -1,0 +1,96 @@
+<p class="lead">Unterlage für die IT-Sicherheit: Aufbau, Schutzmaßnahmen je Ebene, Angriffsfläche, ehrliche Stärken und Schwächen sowie die Maßnahmen bis zum Regelbetrieb. Stand: Testphase.</p>
+
+<h2>Architektur in Kürze</h2>
+<ul>
+<li>Ein Linux-Server (Ubuntu 24.04 LTS) bei Hetzner, Rechenzentrum Nürnberg. Alle Dienste laufen in Docker-Containern.</li>
+<li>Einziger Eingang: <b>Caddy</b> als Reverse-Proxy auf Port 443 (Port 80 nur für die Weiterleitung auf HTTPS und die Zertifikatsausstellung).</li>
+<li>Dahinter zwei getrennte Instanzen der Anwendung (Test und Produktiv) mit eigenen Daten, dazu das Sprachmodell (llama.cpp) – beide ohne eigenen Port nach außen, nur im internen Docker-Netz erreichbar.</li>
+<li>Code kommt aus einem öffentlichen GitHub-Repository; der Server holt Änderungen selbst ab (Pull). Es gibt keine eingehende Verbindung für Auslieferungen.</li>
+<li>Keine externen KI-Dienste, keine Cloud-APIs, keine Tracking- oder Analysedienste, keine Schriften oder Skripte von fremden Servern.</li>
+</ul>
+
+<h2>Schutzmaßnahmen je Ebene</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Ebene</th><th>Maßnahme</th></tr></thead>
+<tbody>
+<tr><td>Netz</td><td>Host-Firewall (ufw): nur 22 (SSH), 80, 443 offen. fail2ban gegen Anmelde-Angriffe auf SSH. Anwendung und Sprachmodell nicht direkt erreichbar.</td></tr>
+<tr><td>Transport</td><td>TLS über Let's-Encrypt-Zertifikate (automatische Erneuerung), HSTS (1 Jahr). Die Live-Verbindung (WebSocket) läuft ebenfalls über TLS.</td></tr>
+<tr><td>Browser</td><td>Content-Security-Policy (nur eigene Skripte, keine Inline-Skripte, keine fremden Quellen, kein Einbetten in fremde Seiten), X-Frame-Options DENY, nosniff, Referrer-Policy no-referrer, Permissions-Policy (Mikrofon nur für die eigene Seite, Kamera aus).</td></tr>
+<tr><td>Anmeldung</td><td>Zugangspasswort; Sitzungs-Cookie mit HMAC-SHA256-Signatur, HttpOnly, Secure, SameSite=Strict, Ablauf nach 12 h. Sperre nach 5 Fehlversuchen je IP für 15 Minuten. Alle Schnittstellen und die Live-Verbindung prüfen die Sitzung.</td></tr>
+<tr><td>Anwendung</td><td>Eingaben werden bei der Anzeige maskiert (Schutz vor Skript-Einschleusung); Upload nur erlaubte Dateiendungen, max. 2 GB; Dateinamen werden serverseitig vergeben; Datenbankzugriffe mit Platzhaltern (keine SQL-Injektion über Eingaben).</td></tr>
+<tr><td>Container</td><td>Anwendung läuft als nicht-privilegierter Benutzer (UID 1000); schlankes Basis-Image; Logs in der Größe begrenzt.</td></tr>
+<tr><td>Betriebssystem</td><td>unattended-upgrades: Sicherheitsupdates werden automatisch eingespielt; Swap gegen Speicherengpässe.</td></tr>
+<tr><td>Daten</td><td>Löschfristen automatisch (Test: Audio 7 Tage, Text 30 Tage); Test- und Produktivdaten getrennt; nächtliche Datenbanksicherung (14 Tage).</td></tr>
+<tr><td>Auslieferung</td><td>Pull-Deployment alle 2 Minuten; Änderungen erst in Test, Produktiv nur nach Freigabe (eigener Branch). Automatische Tests bei jeder Änderung (26 Tests inkl. Browser-Test).</td></tr>
+</tbody></table></div>
+
+<h2>Angriffsfläche</h2>
+<ul>
+<li><b>Von außen erreichbar:</b> HTTPS-Webanwendung (Anmeldeseite, nach Anmeldung die Schnittstellen und die Live-Verbindung), Port 80 (nur Weiterleitung), SSH.</li>
+<li><b>Ohne Anmeldung erreichbar:</b> Anmeldeseite, Oberflächen-Dateien (HTML/CSS/JS, keine Daten), <code>/healthz</code> (liefert nur <code>{"ok": true}</code>).</li>
+<li><b>Ausgehend:</b> Ubuntu- und Docker-Updates, GitHub (Code), einmalig Modell-Downloads (GitHub, Hugging Face), Let's Encrypt. Keine Nutzerdaten.</li>
+<li><b>Lieferkette:</b> Python-Pakete (PyPI), Docker-Images (Docker Hub, GitHub Container Registry), Modell-Dateien.</li>
+</ul>
+
+<h2>Stärken</h2>
+<div class="grid2">
+<div class="box pro"><h4>Was gut ist</h4><ul>
+<li>Geschlossenes System: kein Datenabfluss an externe KI oder Cloud-Dienste – das größte Risiko typischer KI-Lösungen entfällt.</li>
+<li>Kleine Angriffsfläche: ein Eingang, alles andere intern.</li>
+<li>Pull statt Push: kein Deploy-Schlüssel auf GitHub, kein offener Admin-Zugang für die Auslieferung.</li>
+<li>Quelloffen und nachvollziehbar: jede Änderung ist mit Datum und Inhalt im Repository dokumentiert.</li>
+<li>Arbeitsplatz-PCs brauchen keine Software und keine Sonderrechte – nur einen Browser.</li>
+<li>Reproduzierbar: Server lässt sich per Skript in ca. 15 Minuten neu aufbauen.</li>
+</ul></div>
+<div class="box con"><h4>Schwächen (ehrlich)</h4><ul>
+<li>Ein gemeinsames Passwort statt persönlicher Konten; keine Rollen, alle Angemeldeten sehen alle Aufnahmen.</li>
+<li>Kein Audit-Log (wer hat was geöffnet/gelöscht).</li>
+<li>Daten auf der Festplatte nicht zusätzlich verschlüsselt; Sicherung liegt auf demselben Server.</li>
+<li>SSH ist offen und derzeit mit Root-Passwort (per E-Mail von Hetzner) statt Schlüssel.</li>
+<li>Docker-Images und Modelle über „gleitende“ Versionen/ohne Prüfsumme geladen; Python-Abhängigkeiten nicht fest gepinnt.</li>
+<li>Kein Monitoring/Alarmierung; ein Server = ein Ausfallpunkt.</li>
+<li>Wer Schreibrechte am GitHub-Repository hat, kann Code auf den Server bringen (Test sofort, Produktiv über den Freigabe-Branch).</li>
+<li>Adresse über den Dienst sslip.io (Test) statt einer städtischen Domain.</li>
+</ul></div>
+</div>
+
+<h2>Risiken und Maßnahmen</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Risiko</th><th>Bewertung</th><th>Maßnahme</th><th>Wann</th></tr></thead>
+<tbody>
+<tr><td>Passwort wird weitergegeben → Unbefugte sehen Aufnahmen</td><td><span class="tag hoch">hoch</span></td><td>Anmeldung mit städtischem Konto (Entra ID / OIDC), jede Person sieht nur eigene/geteilte Aufnahmen. Bis dahin: nur Testaufnahmen.</td><td>vor Regelbetrieb</td></tr>
+<tr><td>Übernahme des GitHub-Kontos → Schadcode auf dem Server</td><td><span class="tag mittel">mittel</span></td><td>Zwei-Faktor-Anmeldung, Schutz des Freigabe-Branches (nur geprüfte Änderungen), perspektivisch Repository in eine städtische GitHub-Organisation.</td><td>sofort / Pilot</td></tr>
+<tr><td>SSH-Angriffe</td><td><span class="tag mittel">mittel</span></td><td>SSH nur mit Schlüssel, Passwort-Login aus; zusätzlich Hetzner-Cloud-Firewall, die SSH nur aus dem Stadtnetz erlaubt.</td><td>sofort</td></tr>
+<tr><td>Manipulierte Abhängigkeit oder Modell-Datei</td><td><span class="tag mittel">mittel</span></td><td>Versionen und Prüfsummen fest hinterlegen (Lock-Datei, Image-Digests, SHA-256 für Modelle); automatische Schwachstellen-Scans (z. B. Dependabot, Trivy).</td><td>Pilot</td></tr>
+<tr><td>Ausfall des Servers</td><td><span class="tag mittel">mittel</span></td><td>Sicherung zusätzlich verschlüsselt an zweiten Ort; Hetzner-Snapshots; Wiederanlauf per Skript dokumentiert; Monitoring mit Alarm.</td><td>Pilot</td></tr>
+<tr><td>Diebstahl der Festplatte / Zugriff durch Hoster</td><td><span class="tag gering">gering</span></td><td>AVV mit Hetzner (ISO 27001); optional Verschlüsselung der Daten-Partition; alternativ Betrieb im eigenen Rechenzentrum.</td><td>Regelbetrieb</td></tr>
+<tr><td>Fehlende Nachvollziehbarkeit</td><td><span class="tag mittel">mittel</span></td><td>Audit-Log für Anmeldung, Öffnen, Export, Löschen.</td><td>vor Regelbetrieb</td></tr>
+<tr><td>Einschleusen von Anweisungen über gesprochenen Text an die KI („Prompt Injection“)</td><td><span class="tag gering">gering</span></td><td>KI hat keine Werkzeuge und keinen Zugriff auf Systeme; Ergebnisse werden automatisch gegen das Original geprüft; Mensch gibt frei.</td><td>umgesetzt</td></tr>
+<tr><td>Überlast durch viele gleichzeitige Nutzer</td><td><span class="tag gering">gering</span></td><td>Warteschlange; Server kann jederzeit vergrößert werden; Regelbetrieb auf GPU-Server.</td><td>Regelbetrieb</td></tr>
+</tbody></table></div>
+
+<h2>Wiederanlauf</h2>
+<ol>
+<li>Neuen Server mit dem Einrichtungsskript anlegen (ca. 15 Minuten, vollautomatisch).</li>
+<li>Letzte Datenbanksicherung zurückspielen.</li>
+<li>Adresse (DNS) auf den neuen Server zeigen lassen.</li>
+</ol>
+<p>Audio wird bewusst nicht gesichert; nach einem Totalausfall sind Texte und Protokolle bis zur letzten Sicherung vorhanden, Audio nicht.</p>
+
+<h2>Fragen, die die IT-Sicherheit stellen wird – und die Antworten</h2>
+<details><summary>Welche Daten verlassen den Server?</summary><p>Keine Nutzerdaten. Ausgehend gibt es nur Software- und Code-Updates und einmalige Modell-Downloads.</p></details>
+<details><summary>Wer hat Administrationszugang?</summary><p>Derzeit das KI-Management (Hetzner-Konto, GitHub-Konto). Für den Regelbetrieb: benannte Administratoren mit persönlichen Schlüsseln und Vertretungsregelung.</p></details>
+<details><summary>Wie werden Sicherheitslücken geschlossen?</summary><p>Betriebssystem automatisch; Anwendung und Abhängigkeiten per Änderung im Repository, die der Server innerhalb von Minuten übernimmt. Schwachstellen-Scans sind als Maßnahme geplant.</p></details>
+<details><summary>Ist der Code geprüft?</summary><p>Automatische Tests laufen bei jeder Änderung. Eine unabhängige Prüfung (Code-Review, Penetrationstest) ist vor dem Regelbetrieb sinnvoll; der Code ist dafür vollständig offen.</p></details>
+<details><summary>Warum ist das Repository öffentlich?</summary><p>Es enthält nur Code und Dokumentation, keine Daten, Passwörter oder Schlüssel. Offenheit erleichtert Prüfung und Nachnutzung durch andere Kommunen. Sicherheit beruht nicht auf Geheimhaltung des Codes. Auf Wunsch kann es privat geschaltet werden (der Server braucht dann einen Lese-Schlüssel).</p></details>
+<details><summary>Kann das auch im eigenen Rechenzentrum laufen?</summary><p>Ja. Voraussetzung: ein Linux-Server mit Docker (für den Regelbetrieb mit GPU). Das Einrichtungsskript ist dasselbe.</p></details>
+<details><summary>Was passiert bei einem Fehler in einer neuen Version?</summary><p>Sie landet zuerst nur in der Test-Instanz. Produktiv wird erst nach Freigabe aktualisiert; Zurückrollen ist eine einzelne Aktion im Repository.</p></details>
+
+<h2>Maßnahmenplan</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Sofort (Testphase)</th><th>Pilot</th><th>Regelbetrieb</th></tr></thead>
+<tbody><tr>
+<td><ul><li>SSH-Schlüssel statt Passwort, Hetzner-Cloud-Firewall</li><li>Zwei-Faktor für GitHub und Hetzner</li><li>Freigabe-Branch schützen</li></ul></td>
+<td><ul><li>Versionen/Prüfsummen fest</li><li>Schwachstellen-Scans</li><li>Sicherung an zweiten Ort</li><li>Monitoring mit Alarm</li><li>städtische Domain + Zertifikat</li></ul></td>
+<td><ul><li>SSO mit städtischem Konto, Rollen</li><li>Audit-Log</li><li>AVV / eigenes Rechenzentrum</li><li>Penetrationstest</li><li>Betriebs- und Notfallhandbuch, Vertretung</li></ul></td>
+</tr></tbody></table></div>

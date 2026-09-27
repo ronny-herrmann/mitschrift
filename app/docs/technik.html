@@ -1,0 +1,150 @@
+<p class="lead">Technische Dokumentation des Protokollanten: Aufbau, Verarbeitungsschritte, Modelle, Datenhaltung, Betrieb und Weiterentwicklung. Stand: Testphase (Pilot). Der vollständige Quellcode ist öffentlich einsehbar (GitHub, Repository <code>ronny-herrmann/mitschrift</code>); Daten, Passwörter und Schlüssel sind dort nicht enthalten.</p>
+
+<h2>Überblick</h2>
+<p>Der Protokollant ist eine Web-Anwendung. Der Browser (PC oder Handy) nimmt nur auf und zeigt an; die gesamte Rechenarbeit – Spracherkennung, Sprechererkennung, KI-Bereinigung, Zusammenfassung – passiert auf einem zentralen Server. Dadurch braucht der Arbeitsplatz weder Installation noch Rechenleistung, und das Ergebnis ist unabhängig von der Hardware vor Ort.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Baustein</th><th>Technik</th><th>Lizenz</th><th>Aufgabe</th></tr></thead>
+<tbody>
+<tr><td>Oberfläche</td><td>HTML, CSS, JavaScript ohne Framework, ohne externe Dienste; installierbar als Web-App (PWA)</td><td>eigener Code</td><td>Aufnahme, Live-Anzeige, Bearbeitung, Export</td></tr>
+<tr><td>Anwendungsserver</td><td>Python 3.12, FastAPI, Uvicorn</td><td>MIT / BSD</td><td>Schnittstellen, Live-Verbindung, Warteschlange, Anmeldung</td></tr>
+<tr><td>Spracherkennung</td><td>NVIDIA Parakeet TDT 0.6B v3, int8, über sherpa-onnx (ONNX Runtime)</td><td>CC-BY-4.0 (Modell), Apache-2.0</td><td>Sprache → Text mit Wort-Zeitstempeln</td></tr>
+<tr><td>Satz-/Pausenerkennung</td><td>Silero VAD (ONNX, im Code enthalten)</td><td>MIT</td><td>erkennt Sprechpausen, schneidet Sätze</td></tr>
+<tr><td>Sprechererkennung</td><td>pyannote Segmentation 3.0 + 3D-Speaker ERes2Net, über sherpa-onnx</td><td>MIT / Apache-2.0</td><td>„Sprecher 1/2/…“ unterscheiden</td></tr>
+<tr><td>Sprachmodell (KI)</td><td>Ministral 3 von Mistral AI (Frankreich), 3B-Variante, Q4_K_M, über llama.cpp</td><td>Apache-2.0 / MIT</td><td>Text bereinigen, Protokoll schreiben</td></tr>
+<tr><td>Datenhaltung</td><td>SQLite-Datenbank + WAV-Dateien je Instanz</td><td>gemeinfrei</td><td>Transkripte, Protokolle, Glossar, Audio</td></tr>
+<tr><td>HTTPS</td><td>Caddy 2 mit Let's-Encrypt-Zertifikaten</td><td>Apache-2.0</td><td>Verschlüsselung, Sicherheits-Header, Weiterleitung</td></tr>
+<tr><td>Betrieb</td><td>Docker, Docker Compose, Ubuntu 24.04</td><td>Apache-2.0 / GPL</td><td>Container, Neustarts, Isolation</td></tr>
+<tr><td>Optional</td><td>whisper-large-v3-turbo (deutsch feinjustiert) über faster-whisper</td><td>MIT</td><td>alternativer, langsamerer Genauigkeits-Durchlauf</td></tr>
+</tbody></table></div>
+<p>Lizenzkosten: 0 €. Alle Bausteine sind quelloffen und dürfen auch kommerziell genutzt werden.</p>
+
+<h2>Live-Aufnahme – Ablauf</h2>
+<ol>
+<li><b>Mikrofon</b>: Der Browser nimmt über die Web-Audio-Schnittstelle auf; ein AudioWorklet wandelt auf 16 kHz Mono (16 bit) um.</li>
+<li><b>Übertragung</b>: Die Audiodaten gehen laufend über eine verschlüsselte WebSocket-Verbindung (<code>wss://…/ws/live</code>) an den Server. Die Anmeldung wird beim Verbindungsaufbau über das Sitzungs-Cookie geprüft.</li>
+<li><b>Satzerkennung</b>: Silero VAD bewertet jedes 32-ms-Stück (Sprache ja/nein). Nach <b>550 ms</b> Pause gilt ein Satz als fertig; spätestens nach <b>12 s</b> wird an der leisesten Stelle geschnitten.</li>
+<li><b>Vorläufiger Text (grau)</b>: Während gesprochen wird, erkennt der Server etwa jede Sekunde den bisherigen Satzanfang neu und schickt ihn als vorläufigen Text.</li>
+<li><b>Fester Text (schwarz)</b>: Ist der Satz fertig, wird er endgültig erkannt und als Segment mit Zeitstempeln gespeichert.</li>
+<li><b>KI-Bereinigung live</b> (wenn eingeschaltet): Jeder fertige Satz wird im Hintergrund bereinigt; das Ergebnis erscheint, sobald es die Treue-Prüfung bestanden hat.</li>
+<li><b>Stopp</b>: Text und Audio werden sofort gespeichert. Danach laufen im Hintergrund ein zweiter Durchlauf über die ganze Aufnahme (längere Abschnitte, mehr Zusammenhang), die Sprechererkennung und die Bereinigung.</li>
+</ol>
+<p>Gemessen im Entwicklungssystem: erster grauer Text ca. 2 s nach Sprechbeginn, erster fester Satz ca. 3 s. Die Spracherkennung schafft auf 2 CPU-Kernen etwa das 9- bis 10-Fache der Echtzeit (12 s Audio in ca. 1,3 s); auf dem Testserver stehen 8 Kerne zur Verfügung.</p>
+
+<h2>Datei-Upload – Ablauf</h2>
+<ol>
+<li>Datei wird hochgeladen (bis 2 GB; mp3, m4a, wav, mp4, webm, ogg, opus, flac, wma, aac, mkv, mov).</li>
+<li><b>ffmpeg</b> wandelt in 16 kHz Mono um.</li>
+<li>Silero VAD schneidet in Abschnitte bis 28 s (Pause ab 1,2 s als Grenze).</li>
+<li>Spracherkennung in Stapeln zu je 4 Abschnitten, Fortschritt in Prozent.</li>
+<li>Sprechererkennung, danach Glossar-Korrektur und (falls Sprachmodell vorhanden) KI-Bereinigung.</li>
+</ol>
+<p>Uploads laufen in einer Warteschlange nacheinander; nach einem Neustart werden unterbrochene Aufträge fortgesetzt.</p>
+
+<h2>Sprechererkennung</h2>
+<p>Die Segmentierung (pyannote 3.0) findet, wo Stimmen wechseln; ein Stimm-Merkmalsmodell (3D-Speaker) berechnet je Abschnitt einen Zahlenvektor; ähnliche Vektoren werden zu „Sprecher N“ zusammengefasst (Schwellwert 0,7). Die Zuordnung erfolgt auf Wortebene – wechselt der Sprecher mitten im Satz, wird das Segment an der Wortgrenze geteilt. Sehr kurze Randsprecher (&lt; 6 s und &lt; 4 %) werden dem Nachbarn zugeschlagen.</p>
+<p><b>Wichtig:</b> Die Merkmale werden nur während der Verarbeitung im Arbeitsspeicher genutzt und nicht gespeichert. Das System erkennt keine Personen über Aufnahmen hinweg und kennt keine Namen – Namen trägt der Mensch per Klick ein.</p>
+<p>Grenzen: Sehr ähnliche Stimmen können zusammenfallen; bei Durcheinanderreden ist die Zuordnung unsicher.</p>
+
+<h2>KI-Bereinigung („Text bereinigen“)</h2>
+<ul>
+<li>Die KI bekommt die Sätze zeilenweise mit Nummer (<code>[S12] …</code>), dazu das Glossar als Pflicht-Schreibweise und die drei vorherigen Sätze als Zusammenhang. Regeln: nur korrigieren, nichts weglassen, nichts hinzufügen, nicht umformulieren.</li>
+<li><b>Treue-Prüfung ohne KI</b> für jeden Satz: Wort- und Buchstabenvergleich mit dem Original (mindestens 45 % Übereinstimmung), Längengrenzen, und neue Zahlen werden abgelehnt, wenn sie nicht als Zahlwort gesprochen wurden („drei“ → „3“ ist erlaubt, eine erfundene Uhrzeit nicht).</li>
+<li>Besteht ein Satz die Prüfung nicht, bleibt das Original stehen und der Grund wird vermerkt. Original und bereinigte Fassung sind jederzeit umschaltbar.</li>
+</ul>
+
+<h2>Zusammenfassen &amp; strukturieren</h2>
+<ol>
+<li><b>Extraktion</b> (in Blöcken von ca. 9.000 Zeichen): Die KI zieht Bausteine heraus – Thema, Information, Beschluss, Aufgabe – jeweils mit Segmentnummer und <b>wörtlichem Zitat</b>.</li>
+<li><b>Zitatprüfung ohne KI</b>: Jedes Zitat wird unscharf mit dem genannten Segment verglichen (mindestens 60 %). Bausteine ohne passendes Zitat werden verworfen, bevor das Protokoll geschrieben wird.</li>
+<li><b>Schreiben</b>: Aus den geprüften Bausteinen entsteht das Protokoll im gewählten Stil (Zusammenfassung, Ergebnisprotokoll, Verlaufsprotokoll). Jede Zeile trägt Belege wie <code>[S12]</code>.</li>
+<li><b>Prüf-Durchlauf</b>: Zeilen ohne Beleg werden gelb, Belege auf nicht vorhandene Segmente rot markiert; angezeigt wird die Quote belegter Aussagen.</li>
+</ol>
+<p>Ohne Sprachmodell (z. B. lokal auf einem PC) gibt es einen Ausweichweg: Anweisung kopieren, in ein anderes KI-System einfügen, Antwort zurückkopieren – die Prüfungen laufen dann genauso.</p>
+
+<h2>Sprachmodell</h2>
+<ul>
+<li>Modell: <b>Ministral 3, 3B Instruct</b> (Dezember 2025) von Mistral AI, Datei im GGUF-Format, 4-bit-Quantisierung (Q4_K_M, ca. 2,2 GB).</li>
+<li>Laufzeit: llama.cpp-Server mit OpenAI-kompatibler Schnittstelle, Kontext 24.576 Tokens, 2 parallele Anfragen, Temperatur 0 (möglichst deterministisch).</li>
+<li>Nur im internen Docker-Netz erreichbar, kein Port nach außen.</li>
+<li>Größere Varianten (8B, 14B) sind ohne Code-Änderung einsetzbar – eine Zeile in der Server-Konfiguration. 14B ist für den Regelbetrieb auf einem GPU-Server vorgesehen.</li>
+</ul>
+<div class="measure"><button class="btn" id="llm-measure">Geschwindigkeit jetzt messen</button><span id="llm-result" class="muted">Misst eine typische Bereinigung von fünf Sätzen auf diesem Server.</span></div>
+
+<h2>Datenhaltung</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Was</th><th>Wo</th><th>Löschung</th></tr></thead>
+<tbody>
+<tr><td>Transkripte, Segmente (Text, Zeitstempel, Sprecher, bereinigte Fassung), Protokolle</td><td>SQLite-Datei je Instanz (<code>/data/mitschrift.sqlite3</code>)</td><td>manuell jederzeit; automatisch nach Frist (Test: 30 Tage)</td></tr>
+<tr><td>Audio (WAV 16 kHz Mono; Uploads im Originalformat)</td><td><code>/data/audio/</code> je Instanz</td><td>einzeln oder mit dem Transkript; automatisch nach Frist (Test: 7 Tage)</td></tr>
+<tr><td>Glossar</td><td>in der Datenbank</td><td>manuell</td></tr>
+<tr><td>Modelle</td><td>gemeinsamer Modell-Ordner, Sprachmodell in eigenem Volume</td><td>–</td></tr>
+<tr><td>Sicherung</td><td>nächtlich 02:15 Uhr, Kopie der Datenbanken, 14 Tage aufbewahrt, auf demselben Server</td><td>rollierend</td></tr>
+</tbody></table></div>
+<p>Audio wird bewusst nicht gesichert (Datensparsamkeit). Der Löschlauf prüft alle 10 Minuten die Fristen.</p>
+
+<h2>Schnittstellen (Auszug)</h2>
+<p>Alle Schnittstellen außer Anmeldung und <code>/healthz</code> verlangen eine gültige Sitzung.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Pfad</th><th>Zweck</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/login</code>, <code>/api/logout</code></td><td>Anmeldung (Passwort → signiertes Cookie), Abmeldung</td></tr>
+<tr><td><code>WS /ws/live</code></td><td>Live-Aufnahme: Audio hin, vorläufiger/fester Text zurück</td></tr>
+<tr><td><code>POST /api/upload</code></td><td>Datei hochladen</td></tr>
+<tr><td><code>GET/PATCH/DELETE /api/transcripts/…</code></td><td>Transkripte lesen, bearbeiten, löschen; Audio abspielen/löschen; Sprecher umbenennen</td></tr>
+<tr><td><code>POST …/bereinigen</code>, <code>POST …/protokoll</code></td><td>KI-Bereinigung, Protokoll erstellen</td></tr>
+<tr><td><code>GET …/export?format=docx|txt|md|srt</code></td><td>Export</td></tr>
+<tr><td><code>GET/PUT /api/glossar</code></td><td>Glossar</td></tr>
+<tr><td><code>GET /api/health</code>, <code>POST /api/llm/test</code></td><td>Zustand der Modelle, Messung des Sprachmodells</td></tr>
+</tbody></table></div>
+
+<h2>Wichtige Einstellungen</h2>
+<p>Alle Einstellungen stehen in der Datei <code>.env</code> je Instanz (Vorlage: <code>.env.example</code>).</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Einstellung</th><th>Wert im Test</th><th>Bedeutung</th></tr></thead>
+<tbody>
+<tr><td><code>ASR_BACKEND</code></td><td>parakeet</td><td>Spracherkennung (alternativ whisper)</td></tr>
+<tr><td><code>VAD_MIN_SILENCE_MS</code></td><td>550</td><td>Pause, nach der ein Satz fest wird</td></tr>
+<tr><td><code>LIVE_AI_CLEAN</code></td><td>1</td><td>Sätze live bereinigen</td></tr>
+<tr><td><code>DIARIZATION_THRESHOLD</code></td><td>0,7</td><td>kleiner = mehr Sprecher</td></tr>
+<tr><td><code>RETENTION_AUDIO_HOURS</code> / <code>…_TRANSCRIPT_HOURS</code></td><td>168 / 720</td><td>automatische Löschfristen</td></tr>
+<tr><td><code>ACCESS_PASSWORD</code>, <code>SESSION_SECRET</code></td><td>gesetzt</td><td>Zugang, Signatur der Sitzung</td></tr>
+<tr><td><code>LLM_BASE_URL</code>, <code>LLM_MODEL</code></td><td>internes Sprachmodell</td><td>Anbindung der KI</td></tr>
+</tbody></table></div>
+
+<h2>Betrieb und Auslieferung</h2>
+<ul>
+<li><b>Zwei Instanzen</b> auf einem Server: <b>Test</b> folgt dem Entwicklungsstand (Branch <code>main</code>), <b>Produktiv</b> dem freigegebenen Stand (Branch <code>stable</code>). Jede Instanz hat eigene Daten.</li>
+<li><b>Auslieferung per Pull</b>: Der Server fragt alle 2 Minuten bei GitHub nach neuem Code, baut bei Änderungen den Container neu und startet ihn. GitHub hat keinen Zugang zum Server.</li>
+<li><b>Freigabe</b>: Änderung wird auf Test geprüft; erst nach OK wird <code>main</code> nach <code>stable</code> übernommen. Zurückrollen = <code>stable</code> auf den vorherigen Stand setzen.</li>
+<li><b>Qualitätssicherung</b>: 26 automatische Tests (Satzerkennung, KI-Prüfungen, Schnittstellen, Browser-Ende-zu-Ende-Test mit simuliertem Mikrofon, paralleler Modell-Download). Laufen bei jeder Änderung.</li>
+<li><b>Ersteinrichtung</b>: vollautomatisch per cloud-init-Skript (<code>deploy/bootstrap.sh</code>) in ca. 10–15 Minuten: Pakete, Firewall, Swap, automatische Sicherheitsupdates, HTTPS, beide Instanzen, Sprachmodell, Update-Timer, Sicherung.</li>
+<li><b>Umzug/Wechsel</b> auf einen anderen Server (z. B. Rechenzentrum der Stadt): gleiches Skript, anschließend Datenbanken kopieren.</li>
+</ul>
+
+<h2>Code-Übersicht</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Datei</th><th>Inhalt</th></tr></thead>
+<tbody>
+<tr><td><code>app/main.py</code></td><td>Schnittstellen, Live-WebSocket, Anmeldung, Löschfristen, Modell-Laden</td></tr>
+<tr><td><code>app/live.py</code></td><td>Live-Sitzung: Audio empfangen, Sätze schneiden, vorläufiger/fester Text</td></tr>
+<tr><td><code>app/vad.py</code></td><td>Silero VAD und Segment-Automat (live und Upload identisch)</td></tr>
+<tr><td><code>app/asr/</code></td><td>Spracherkennung: Parakeet, Whisper, Test-Attrappe</td></tr>
+<tr><td><code>app/pipeline.py</code>, <code>app/jobs.py</code></td><td>Upload-Verarbeitung und Warteschlange</td></tr>
+<tr><td><code>app/diarize.py</code></td><td>Sprechererkennung</td></tr>
+<tr><td><code>app/bereinigung.py</code></td><td>KI-Bereinigung mit Treue-Prüfung</td></tr>
+<tr><td><code>app/protokoll.py</code></td><td>Protokoll mit Belegpflicht, Zitat- und Belegprüfung</td></tr>
+<tr><td><code>app/store.py</code>, <code>app/export.py</code></td><td>Datenbank, Export</td></tr>
+<tr><td><code>app/modelcache.py</code></td><td>sicherer Modell-Download bei mehreren Instanzen</td></tr>
+<tr><td><code>app/static/</code>, <code>app/docs/</code></td><td>Oberfläche, diese Info-Seiten</td></tr>
+<tr><td><code>deploy/</code></td><td>Server-Einrichtung, Updates, Sicherung, HTTPS, Sprachmodell</td></tr>
+<tr><td><code>bench/</code></td><td>Vergleich von Spracherkennungsmodellen auf eigenen Aufnahmen (Wortfehlerrate)</td></tr>
+</tbody></table></div>
+
+<h2>Bekannte Grenzen</h2>
+<ul>
+<li>Ein gemeinsames Zugangspasswort, keine Benutzerkonten – alle Angemeldeten sehen alle Aufnahmen (Regelbetrieb: städtisches Konto/SSO).</li>
+<li>Kein Protokoll darüber, wer wann was geöffnet hat (Audit-Log geplant).</li>
+<li>Das kleine 3B-Sprachmodell formuliert einfacher als große Modelle; die Prüfungen verhindern Erfundenes, nicht aber holprige Sätze.</li>
+<li>Überlappendes Sprechen und sehr leise, entfernte Sprecher senken die Qualität deutlich – das Mikrofon ist der größte Hebel.</li>
+<li>Deutsch ist die Hauptsprache; Parakeet erkennt 25 europäische Sprachen, bereinigt und zusammengefasst wird auf Deutsch.</li>
+</ul>

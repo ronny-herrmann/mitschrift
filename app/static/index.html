@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0069FF">
-  <title>Mitschrift</title>
+  <title>Protokollant – Stadt Heilbronn</title>
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
@@ -15,8 +15,8 @@
     <!-- Seitenleiste (Desktop) -->
     <aside class="side" id="side">
       <a class="brand" href="#/aufnahme">
-        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="9" fill="#0069FF"/><rect x="8.5" y="11" width="3" height="10" rx="1.5" fill="#fff"/><rect x="14.5" y="6.5" width="3" height="19" rx="1.5" fill="#fff"/><rect x="20.5" y="12.5" width="3" height="7" rx="1.5" fill="#fff"/></svg>
-        <span>Mitschrift</span>
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect x="1" y="1" width="30" height="30" rx="8" fill="#0069FF"/><path fill="#fff" d="M5.5 9h2.6v5.7h4.3V9H15v14h-2.6v-5.9H8.1V23H5.5z"/><rect x="15.9" y="6.5" width="1.2" height="19" rx=".6" fill="#fff" opacity=".85"/><path fill="#fff" d="M18 9h2.5l4.1 8.9V9h2.4v14h-2.5l-4.1-8.9V23H18z"/></svg>
+        <span class="brand-text"><span class="brand-name">Protokollant</span><span class="brand-sub">Stadt Heilbronn</span></span>
       </a>
       <a class="side-cta" href="#/aufnahme"><span class="dot-rec"></span>Neue Aufnahme</a>
       <a class="side-link" href="#/hochladen" data-nav="hochladen"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Datei hochladen</a>
@@ -24,6 +24,8 @@
       <div class="side-list" id="side-list"></div>
       <div class="side-foot">
         <a class="side-link" href="#/glossar" data-nav="glossar"><svg viewBox="0 0 24 24"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/><path d="M8 9h6M8 13h4"/></svg>Glossar</a>
+        <a class="side-link" href="#/faq" data-nav="faq"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.8"/><path d="M12 17.2h.01"/></svg>Häufige Fragen</a>
+        <a class="side-link" href="#/infos" data-nav="infos"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>Infos <span class="side-badge">intern</span></a>
         <div class="sys" id="sys"><span class="sys-dot"></span><span id="sys-txt">Verbinde …</span></div>
       </div>
     </aside>
@@ -40,6 +42,7 @@
     <a href="#/hochladen" data-nav="hochladen"><svg viewBox="0 0 24 24"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>Hochladen</a>
     <a href="#/transkripte" data-nav="transkripte"><svg viewBox="0 0 24 24"><path d="M5 6h14M5 12h14M5 18h9"/></svg>Verlauf</a>
     <a href="#/glossar" data-nav="glossar"><svg viewBox="0 0 24 24"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/></svg>Glossar</a>
+    <a href="#/infos" data-nav="infos"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>Infos</a>
   </nav>
 
   <div class="modal hidden" id="modal" role="dialog" aria-modal="true"><div class="modal-card" id="modal-card"></div></div>

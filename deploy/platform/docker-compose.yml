@@ -13,6 +13,9 @@ services:
   caddy:
     image: caddy:2
     restart: unless-stopped
+    logging: &logs
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
     ports:
       - "80:80"
       - "443:443"
@@ -28,6 +31,7 @@ services:
   llm:
     image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
+    logging: *logs
     # Nur im internen Netz erreichbar – kein Port nach außen.
     command: >
       -hf ${LLM_HF_MODEL:-mistralai/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M}

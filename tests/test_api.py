@@ -206,3 +206,11 @@ def test_bereinigen_import_and_discard(client):
     client.delete(f"/api/transcripts/{tid}/bereinigen")
     assert not client.get(f"/api/transcripts/{tid}").json()["segments"][0]["clean"]
     client.delete(f"/api/transcripts/{tid}")
+
+
+def test_docs_endpoint(client):
+    r = client.get("/api/docs/faq")
+    assert r.status_code == 200 and "<details>" in r.text
+    assert client.get("/api/docs/../main").status_code == 404
+    assert client.get("/api/docs/unbekannt").status_code == 404
+    assert "script-src 'self'" in r.headers["content-security-policy"]

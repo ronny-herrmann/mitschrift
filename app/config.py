@@ -46,7 +46,7 @@ def _env_float(name: str, default: float) -> float:
 @dataclass
 class Settings:
     # --- Allgemein -------------------------------------------------------
-    app_name: str = "Mitschrift"
+    app_name: str = "Protokollant"
     data_dir: Path = field(default_factory=lambda: Path(_env("DATA_DIR", "./data")))
     models_dir: Path = field(default_factory=lambda: Path(_env("MODELS_DIR", "./models")))
     host: str = field(default_factory=lambda: _env("HOST", "0.0.0.0"))

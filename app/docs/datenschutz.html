@@ -1,0 +1,110 @@
+<p class="lead">Unterlage für die Abstimmung mit dem Datenschutzbeauftragten. Sie beschreibt, welche Daten wo verarbeitet werden, schlägt die rechtliche Einordnung vor und listet die Fragen, die vor dem Regelbetrieb geklärt werden sollen.</p>
+<div class="callout warn"><b>Hinweis:</b> Die rechtliche Einordnung ist ein fachlich vorbereiteter Vorschlag, keine Rechtsberatung. Verbindlich entscheiden Datenschutzbeauftragter und Verantwortlicher.</div>
+
+<h2>Kurzfassung</h2>
+<ul>
+<li><b>Zweck:</b> Besprechungen mitschreiben und daraus Protokolle erstellen – nichts anderes.</li>
+<li><b>Verarbeitung:</b> ausschließlich auf einem Server der Stadt (Test: Hetzner, Rechenzentrum Nürnberg). Auch die KI läuft auf diesem Server.</li>
+<li><b>Keine Übermittlung</b> an Dritte, keine externe KI, kein NOVA, keine Drittländer, kein Training von Modellen.</li>
+<li><b>Datensparsam:</b> automatische Löschfristen (Test: Audio 7 Tage, Text 30 Tage), Audio einzeln löschbar, keine Speicherung von Stimmmerkmalen.</li>
+<li><b>Transparenz:</b> Aufnahme startet erst nach Bestätigung, dass alle Teilnehmenden informiert und einverstanden sind.</li>
+<li><b>Testphase:</b> privat finanzierter Testserver, nur Testaufnahmen ohne echte personenbezogene Daten. Echte Sitzungen erst nach AVV zwischen Stadt und Hetzner und Freigabe durch DSB, IT-Sicherheit und Personalrat.</li>
+</ul>
+
+<h2>Datenflüsse</h2>
+<ol>
+<li>Browser nimmt Audio auf und sendet es verschlüsselt (TLS) an den Server.</li>
+<li>Server erkennt Sprache, schneidet Sätze, erkennt Sprecherwechsel, speichert Text und Audio.</li>
+<li>Auf Knopfdruck (oder automatisch) verarbeitet das Sprachmodell auf demselben Server den Text zu einer bereinigten Fassung oder einem Protokoll.</li>
+<li>Nutzer sehen, bearbeiten und exportieren das Ergebnis (Word, Text, Untertitel).</li>
+<li>Löschung manuell oder automatisch nach Frist.</li>
+</ol>
+<p>Ausgehende Verbindungen des Servers gibt es nur für Software-Updates (Ubuntu, Docker-Images), den Abruf von Code-Änderungen bei GitHub und den einmaligen Download der Modell-Dateien. Dabei werden keine Nutzerdaten übertragen.</p>
+
+<h2>Welche Daten?</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Kategorie</th><th>Beispiele</th><th>Speicherung</th></tr></thead>
+<tbody>
+<tr><td>Audio</td><td>Stimme der Teilnehmenden</td><td>WAV/Originaldatei, Frist (Test 7 Tage), einzeln löschbar</td></tr>
+<tr><td>Gesprochene Inhalte als Text</td><td>alles, was in der Besprechung gesagt wird – kann auch Daten Dritter oder besondere Kategorien (Art. 9 DSGVO) enthalten</td><td>Datenbank, Frist (Test 30 Tage)</td></tr>
+<tr><td>Sprecherzuordnung</td><td>„Sprecher 1“; Namen nur, wenn ein Mensch sie einträgt</td><td>Datenbank</td></tr>
+<tr><td>Stimmmerkmale</td><td>Zahlenvektoren zur Unterscheidung der Stimmen</td><td><b>nicht gespeichert</b>, nur während der Verarbeitung im Arbeitsspeicher</td></tr>
+<tr><td>Metadaten</td><td>Titel, Datum/Uhrzeit, Dauer</td><td>Datenbank</td></tr>
+<tr><td>Technische Protokolle</td><td>IP-Adresse und Aufruf in den Server-Logs</td><td>Container-Logs (Größe begrenzt, werden überschrieben)</td></tr>
+</tbody></table></div>
+<p>Es gibt keine Nutzerkonten und damit keine Zuordnung, wer eine Aufnahme gemacht hat. Es gibt keine Statistiken, keine Auswertung von Redeanteilen und keine Bewertung von Personen.</p>
+
+<h2>Rechtliche Einordnung (Vorschlag)</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Thema</th><th>Vorschlag</th></tr></thead>
+<tbody>
+<tr><td>Verantwortlicher</td><td>Stadt Heilbronn (jeweilige Organisationseinheit, die aufzeichnet); Betrieb durch Amt 10.5</td></tr>
+<tr><td>Rechtsgrundlage</td><td>Art. 6 Abs. 1 lit. e DSGVO i. V. m. § 4 LDSG BW (Protokollführung als Teil der Aufgabenerfüllung); für Beschäftigtendaten § 15 LDSG BW. Zu prüfen: ob für die Aufzeichnung zusätzlich eine Einwilligung (Art. 6 Abs. 1 lit. a, Art. 7) gewählt wird – im Beschäftigungsverhältnis ist die Freiwilligkeit kritisch zu bewerten.</td></tr>
+<tr><td>Aufzeichnung des Wortes</td><td>Das Aufnehmen des nicht öffentlich gesprochenen Wortes ist nur mit Einverständnis zulässig (§ 201 StGB). Deshalb: Information vorab, Einverständnis aller Anwesenden, bei Widerspruch keine Aufnahme. Die Anwendung verlangt diese Bestätigung vor jedem Start.</td></tr>
+<tr><td>Besondere Kategorien (Art. 9)</td><td>Können im Gesprochenen vorkommen (z. B. Gesundheit in Personalgesprächen). Vorschlag: Nutzung für Besprechungen mit solchen Inhalten zunächst ausschließen (Nutzungsregel).</td></tr>
+<tr><td>Biometrie</td><td>Die Sprechererkennung unterscheidet Stimmen innerhalb einer Aufnahme, identifiziert aber keine Personen und speichert keine Merkmale. Einschätzung: keine biometrischen Daten „zur eindeutigen Identifizierung“ im Sinne von Art. 9 – bitte durch DSB bestätigen lassen. Die Sprechererkennung ist abschaltbar.</td></tr>
+<tr><td>Auftragsverarbeitung</td><td>Hetzner Online GmbH (Hosting, Rechenzentrum in Deutschland). AVV nach Art. 28 DSGVO ist in der Hetzner-Konsole abschließbar. Weitere Auftragsverarbeiter: keine. Mistral AI, NVIDIA, GitHub erhalten keine Daten (nur Herkunft von Software/Modellen).</td></tr>
+<tr><td>Drittlandübermittlung</td><td>keine</td></tr>
+<tr><td>Automatisierte Entscheidung (Art. 22)</td><td>keine – Protokolle sind Entwürfe, ein Mensch prüft und verantwortet sie</td></tr>
+<tr><td>KI-Verordnung (EU)</td><td>Kein Hochrisiko-System, solange es nicht zur Leistungs- oder Verhaltensbewertung von Beschäftigten genutzt wird (Anhang III Nr. 4) – das wird per Nutzungsregel ausgeschlossen. Pflicht zur KI-Kompetenz der Nutzenden (Art. 4): über den KI-Führerschein abdeckbar. Empfehlung: Protokolle als „KI-unterstützt erstellt“ kennzeichnen.</td></tr>
+<tr><td>Datenschutz-Folgenabschätzung</td><td>Schwellwertprüfung erforderlich. Einschätzung: wegen neuer Technologie (KI), Beschäftigtendaten und möglicher sensibler Inhalte ist eine schlanke DSFA empfehlenswert, auch wenn keine Profilbildung oder Bewertung stattfindet.</td></tr>
+</tbody></table></div>
+
+<h2>Betroffenenrechte</h2>
+<ul>
+<li><b>Information:</b> vor jeder Aufnahme mündlich; Textbaustein unten.</li>
+<li><b>Auskunft (Art. 15):</b> Transkripte sind durchsuchbar und exportierbar.</li>
+<li><b>Berichtigung (Art. 16):</b> jeder Satz ist direkt editierbar.</li>
+<li><b>Löschung (Art. 17):</b> Transkript und Audio jederzeit sofort löschbar; zusätzlich automatische Fristen. In der nächtlichen Datenbanksicherung bleibt ein gelöschter Eintrag höchstens 14 Tage erhalten.</li>
+<li><b>Widerspruch:</b> Widerspricht eine anwesende Person, wird nicht aufgenommen.</li>
+</ul>
+
+<h2>Technische und organisatorische Maßnahmen (Kurzfassung)</h2>
+<ul>
+<li>Verschlüsselte Übertragung (HTTPS/TLS, auch für die Live-Verbindung), Sicherheits-Header.</li>
+<li>Zugang nur mit Anmeldung; Sperre nach 5 Fehlversuchen; Sitzung läuft nach 12 Stunden ab.</li>
+<li>Firewall: nur HTTPS, HTTP (Weiterleitung) und Wartungszugang; Sprachmodell nur intern erreichbar.</li>
+<li>Automatische Sicherheitsupdates; die Anwendung läuft im Container als nicht-privilegierter Benutzer.</li>
+<li>Getrennte Test- und Produktivdaten.</li>
+<li>Details, Stärken und offene Punkte: <a href="#/infos/sicherheit">Infos → IT-Sicherheit</a>.</li>
+</ul>
+
+<h2>Entwurf für das Verzeichnis von Verarbeitungstätigkeiten</h2>
+<div class="table-wrap"><table>
+<tbody>
+<tr><th>Bezeichnung</th><td>Protokollant – KI-gestützte Transkription und Protokollierung von Besprechungen</td></tr>
+<tr><th>Zweck</th><td>Erstellung von Mitschriften und Protokollen dienstlicher Besprechungen</td></tr>
+<tr><th>Betroffene</th><td>Teilnehmende von Besprechungen (Beschäftigte, ggf. externe Gäste); im Gespräch erwähnte Personen</td></tr>
+<tr><th>Datenkategorien</th><td>Stimme/Audio, Gesprächsinhalte, Sprecherzuordnung, Metadaten</td></tr>
+<tr><th>Empfänger</th><td>Nutzende der Anwendung; Auftragsverarbeiter Hosting (Hetzner Online GmbH)</td></tr>
+<tr><th>Drittland</th><td>nein</td></tr>
+<tr><th>Löschfristen</th><td>Audio 7 Tage, Transkript 30 Tage (Test; für den Regelbetrieb festzulegen), manuell jederzeit</td></tr>
+<tr><th>TOM</th><td>siehe Abschnitt oben und IT-Sicherheit</td></tr>
+</tbody></table></div>
+
+<h2>Textbaustein: Information der Teilnehmenden</h2>
+<div class="callout">„Diese Besprechung wird zur Erstellung des Protokolls aufgezeichnet und automatisch verschriftlicht. Die Verarbeitung erfolgt ausschließlich auf einem Server der Stadt Heilbronn in Deutschland; es werden keine Daten an externe KI-Dienste weitergegeben. Die Aufnahme wird nach spätestens [7] Tagen gelöscht, die Mitschrift nach [30] Tagen. Das Protokoll wird von [Name] geprüft. Ist jemand nicht einverstanden? Dann nehmen wir nicht auf.“</div>
+
+<h2>Fragen an den Datenschutzbeauftragten</h2>
+<ol>
+<li>Welche Rechtsgrundlage soll gelten: Aufgabenerfüllung (Art. 6 Abs. 1 lit. e i. V. m. § 4/§ 15 LDSG BW) mit Einverständnis nach § 201 StGB – oder zusätzlich eine formale Einwilligung?</li>
+<li>Reicht die mündliche Information mit Bestätigung in der Anwendung, oder soll das Einverständnis dokumentiert werden (z. B. Vermerk im Protokoll)?</li>
+<li>Wird eine DSFA verlangt, oder genügt die Schwellwertprüfung? Wer erstellt sie?</li>
+<li>Ist die Sprechererkennung (Stimmen unterscheiden, nichts speichern, niemanden identifizieren) datenschutzrechtlich unkritisch, oder soll sie standardmäßig aus sein?</li>
+<li>Welche Löschfristen sollen im Regelbetrieb gelten – getrennt für Audio und Text? Soll Audio direkt nach Fertigstellung des Protokolls gelöscht werden (technisch einstellbar)?</li>
+<li>Sollen Besprechungen mit besonderen Kategorien (Personalgespräche, Gesundheit, Sozialdaten) ausgeschlossen werden?</li>
+<li>Genügt der AVV-Standard von Hetzner, oder ist eine eigene Vereinbarung nötig? Alternativ: Betrieb im eigenen Rechenzentrum?</li>
+<li>Wie sollen externe Teilnehmende (Bürger, Firmen) informiert werden?</li>
+<li>Muss das Verzeichnis von Verarbeitungstätigkeiten je Organisationseinheit oder einmal zentral geführt werden?</li>
+<li>Sind die Sicherungskopien (14 Tage, gleicher Server) so in Ordnung, oder sollen sie verschlüsselt an einen zweiten Ort?</li>
+<li>Wie sind Zugriffsrechte im Regelbetrieb zu gestalten (nur eigene Aufnahmen, Teilen mit Teilnehmenden, Vertretung)?</li>
+</ol>
+
+<h2>Offene Punkte bis zum Regelbetrieb</h2>
+<ul>
+<li>Anmeldung mit städtischem Konto (SSO); jede Person sieht nur eigene bzw. geteilte Aufnahmen.</li>
+<li>Protokollierung von Zugriffen (wer hat wann was geöffnet, exportiert, gelöscht).</li>
+<li>AVV Stadt–Hetzner oder Betrieb im eigenen Rechenzentrum.</li>
+<li>Festlegung der Löschfristen, Nutzungsregeln und ggf. Dienstvereinbarung (siehe <a href="#/infos/personalrat">Personalrat</a>).</li>
+<li>Datenschutzhinweis in der Anwendung verlinken.</li>
+</ul>

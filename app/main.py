@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -117,7 +117,23 @@ def require_ready():
                             else f"Sprachmodell nicht verfügbar: {state.load_error}")
 
 
-app = FastAPI(title="Mitschrift", version=__version__, lifespan=lifespan)
+app = FastAPI(title="Protokollant", version=__version__, lifespan=lifespan)
+
+# --- Sicherheits-Header ------------------------------------------------------------
+# Content-Security-Policy: nur eigene Skripte (keine Inline-Skripte, keine fremden Quellen).
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+       "media-src 'self' blob:; connect-src 'self'; worker-src 'self'; font-src 'self'; object-src 'none'; "
+       "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
+
+
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", CSP)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    return response
+
 
 # --- Anmeldung ---------------------------------------------------------------------
 async def require_auth(request: Request):
@@ -188,6 +204,18 @@ def _apply_retention():
 
 
 # --- API ----------------------------------------------------------------------------
+DOCS_DIR = Path(__file__).parent / "docs"
+DOCS = {"faq", "technik", "infrastruktur", "datenschutz", "sicherheit", "personalrat"}
+
+
+@app.get("/api/docs/{name}", dependencies=[Depends(require_auth)])
+async def get_doc(name: str):
+    """Interne Info-Seiten (nur angemeldet). Inhalte liegen als HTML-Bausteine in app/docs/."""
+    if name not in DOCS:
+        raise HTTPException(404, "Unbekannte Seite")
+    return HTMLResponse((DOCS_DIR / f"{name}.html").read_text(encoding="utf-8"))
+
+
 @app.post("/api/llm/test", dependencies=[Depends(require_auth)])
 async def llm_test():
     """Misst das Sprachmodell mit einer typischen Bereinigungs-Anfrage (für Betrieb und Doku)."""

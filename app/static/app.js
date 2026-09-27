@@ -1,4 +1,4 @@
-/* Mitschrift – Oberfläche (reines JavaScript, kein Build-Schritt, keine externen Abhängigkeiten). */
+/* Protokollant – Oberfläche (reines JavaScript, kein Build-Schritt, keine externen Abhängigkeiten). */
 (() => {
   'use strict';
 
@@ -104,7 +104,7 @@
   setInterval(() => { if (sideItems.some((t) => t.status === 'processing' || t.status === 'refining')) loadSide(); }, 3000);
 
   // ================================================================ Router
-  const routes = { aufnahme: renderAufnahme, hochladen: renderHochladen, transkripte: renderListe, glossar: renderGlossar, t: renderDetail };
+  const routes = { aufnahme: renderAufnahme, hochladen: renderHochladen, transkripte: renderListe, glossar: renderGlossar, faq: () => renderInfo('faq'), infos: renderInfo, t: renderDetail };
   let cleanup = null, recordingActive = false;
   async function route() {
     if (recordingActive && !location.hash.startsWith('#/aufnahme')) {
@@ -131,7 +131,7 @@
           <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung 10.5" autocomplete="off"></label>
           <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
         </div>
-        <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden wurden über Aufzeichnung und Transkription informiert.</span></label>
+        <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
         <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
         <div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div>
         <div class="rec-tips">
@@ -364,6 +364,48 @@
       const eintraege = $$('tr', body).map((tr) => { const [a, b] = $$('input', tr); return { von: a.value, zu: b.value }; });
       const saved = await api('/api/glossar', { method: 'PUT', body: JSON.stringify({ eintraege }) });
       toast(`Glossar gespeichert (${saved.length} Einträge)`);
+    });
+  }
+
+  // ================================================================ FAQ & interne Infos
+  const INFO_TABS = [
+    ['faq', 'Häufige Fragen'], ['technik', 'Technische Doku'], ['infrastruktur', 'Infrastruktur'],
+    ['datenschutz', 'Datenschutz'], ['sicherheit', 'IT-Sicherheit'], ['personalrat', 'Personalrat'],
+  ];
+  async function renderInfo(tab) {
+    if (!INFO_TABS.some(([k]) => k === tab)) tab = 'faq';
+    const intern = tab !== 'faq';
+    view.innerHTML = `
+      <div class="page-head"><h1>${intern ? 'Infos <span class="pill">intern</span>' : 'Häufige Fragen'}</h1>
+        <p>${intern ? 'Unterlagen für Datenschutz, IT-Sicherheit, Personalrat und Betrieb. Stand und Inhalte wachsen mit dem Projekt.' : 'Kurze Antworten für alle, die den Protokollanten nutzen.'}</p></div>
+      <nav class="info-tabs" aria-label="Info-Bereiche">${INFO_TABS.map(([k, l]) => `<a href="#/${k === 'faq' ? 'faq' : 'infos/' + k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</nav>
+      <article class="doc card" id="doc"><p class="muted">Lädt …</p></article>`;
+    const act = $('.info-tabs a.active'); if (act && act.scrollIntoView) act.scrollIntoView({ inline: 'center', block: 'nearest' });
+    const html = await api(`/api/docs/${tab}`);
+    const doc = $('#doc');
+    doc.innerHTML = html;
+    // Inhaltsverzeichnis aus den Überschriften (nur bei längeren Seiten)
+    const heads = $$('h2', doc);
+    if (heads.length > 3) {
+      heads.forEach((h, i) => (h.id = h.id || `a${i}`));
+      const lead = $('p.lead', doc) || null;
+      (lead ? lead : doc).insertAdjacentHTML(lead ? 'afterend' : 'afterbegin', `<nav class="toc"><strong>Inhalt</strong>${heads.map((h) => `<a href="#" data-goto="${h.id}">${esc(h.textContent)}</a>`).join('')}</nav>`);
+      doc.addEventListener('click', (e) => { const a = e.target.closest('[data-goto]'); if (a) { e.preventDefault(); document.getElementById(a.dataset.goto).scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+    }
+    // Live-Werte des Servers in die Doku einsetzen (data-live="…")
+    $$('[data-live]', doc).forEach((el) => {
+      const v = el.dataset.live.split('.').reduce((o, k) => (o == null ? o : o[k]), health);
+      if (v != null && v !== '') el.textContent = v;
+    });
+    const btn = $('#llm-measure', doc);
+    if (btn) btn.addEventListener('click', async () => {
+      btn.disabled = true; btn.textContent = 'Misst …';
+      try {
+        const r = await api('/api/llm/test', { method: 'POST' });
+        $('#llm-result', doc).innerHTML = `Antwort nach <b>${r.sekunden} s</b> · ${r.tokens_pro_sekunde_ausgabe ?? '–'} Tokens/s beim Schreiben · ${r.tokens_pro_sekunde_eingabe ?? '–'} Tokens/s beim Lesen`;
+        const cell = $('#llm-infra', doc); if (cell) cell.textContent = `${r.sekunden} s (${r.tokens_pro_sekunde_ausgabe ?? '–'} Tokens/s)`;
+      } catch (e) { $('#llm-result', doc).textContent = e.message; }
+      btn.disabled = false; btn.textContent = 'Erneut messen';
     });
   }
 

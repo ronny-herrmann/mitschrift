@@ -134,3 +134,16 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.wait_for_selector(".item")
     assert page.locator(".item").count() >= 2
     assert not [e for e in page.errors if "favicon" not in e], page.errors
+
+
+def test_info_pages(page, server):
+    page.goto(server + "/#/faq")
+    page.wait_for_selector("#doc details")
+    assert "Häufige Fragen" in page.inner_text(".page-head")
+    for tab, needle in [("technik", "Live-Aufnahme"), ("infrastruktur", "Schaubild"), ("datenschutz", "Fragen an den"),
+                        ("sicherheit", "Schwächen"), ("personalrat", "Mitbestimmung")]:
+        page.goto(server + f"/#/infos/{tab}")
+        page.wait_for_selector("#doc p.lead")
+        assert needle in page.inner_text("#doc"), tab
+        assert page.locator(".info-tabs a.active").count() == 1
+    assert not [e for e in page.errors if "favicon" not in e], page.errors

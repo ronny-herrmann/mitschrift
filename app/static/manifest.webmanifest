@@ -1,7 +1,7 @@
 {
-  "name": "Mitschrift – Transkription & Protokoll",
-  "short_name": "Mitschrift",
-  "description": "Lokale Audiotranskription und Protokollerstellung für die Verwaltung",
+  "name": "Protokollant – Stadt Heilbronn",
+  "short_name": "Protokollant",
+  "description": "Meetings mitschreiben und protokollieren – auf dem eigenen Server der Stadt",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

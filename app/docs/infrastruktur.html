@@ -1,0 +1,151 @@
+<p class="lead">Ein geschlossenes System auf einem Server in Deutschland: Aufnahme im Browser, alles Weitere – Spracherkennung, Sprechererkennung und die KI für Bereinigung und Protokoll – auf diesem einen Server. Es gibt keine externe KI-Schnittstelle und im Betrieb keinen Datenfluss nach außen.</p>
+
+<h2>Schaubild</h2>
+<div class="diagram">
+<svg viewBox="0 0 980 580" role="img" aria-label="Schaubild der Infrastruktur" font-family="Segoe UI, system-ui, sans-serif">
+<defs><marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#0069FF"/></marker><marker id="arp" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#7C3AED"/></marker><marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 10 5 0 10z" fill="#6B7280"/></marker></defs>
+<rect x="10" y="180" width="200" height="190" rx="14" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="110" y="208" text-anchor="middle" font-size="15" font-weight="700" fill="#111827">Arbeitsplatz / Handy</text>
+<text x="110" y="234" text-anchor="middle" font-size="12.5" fill="#374151">Browser (Edge, Chrome …)</text>
+<text x="110" y="256" text-anchor="middle" font-size="12.5" fill="#374151">nimmt auf · zeigt an</text>
+<text x="110" y="278" text-anchor="middle" font-size="12.5" fill="#374151">keine Installation</text>
+<text x="110" y="300" text-anchor="middle" font-size="12.5" fill="#374151">keine Rechenlast</text>
+<text x="110" y="340" text-anchor="middle" font-size="12" fill="#6B7280">Standard-Büro-PC reicht</text>
+<line x1="212" y1="242" x2="296" y2="242" stroke="#0069FF" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="254" y="232" text-anchor="middle" font-size="11.5" fill="#0052CC">Audio</text>
+<line x1="296" y1="308" x2="212" y2="308" stroke="#0069FF" stroke-width="2.2" marker-end="url(#ar)"/>
+<text x="254" y="328" text-anchor="middle" font-size="11.5" fill="#0052CC">Text live</text>
+<text x="254" y="270" text-anchor="middle" font-size="10.5" fill="#6B7280">HTTPS / WSS</text>
+<text x="254" y="284" text-anchor="middle" font-size="10.5" fill="#6B7280">verschlüsselt</text>
+<rect x="300" y="20" width="460" height="545" rx="18" fill="#FFFFFF" stroke="#0069FF" stroke-width="2"/>
+<text x="530" y="48" text-anchor="middle" font-size="15" font-weight="700" fill="#111827">Server in Deutschland (Hetzner, Nürnberg)</text>
+<text x="530" y="68" text-anchor="middle" font-size="12" fill="#6B7280">Test: 8 Kerne · 16 GB · Firewall: nur Ports 443, 80, 22</text>
+<rect x="318" y="84" width="424" height="50" rx="10" fill="#EEF4FF" stroke="#C7DBFF"/>
+<text x="530" y="105" text-anchor="middle" font-size="13.5" font-weight="700" fill="#0052CC">Caddy – HTTPS-Tor</text>
+<text x="530" y="123" text-anchor="middle" font-size="11.5" fill="#374151">Zertifikat · Sicherheits-Header · leitet an Test oder Produktiv</text>
+<line x1="420" y1="136" x2="420" y2="156" stroke="#0069FF" stroke-width="2" marker-end="url(#ar)"/>
+<line x1="640" y1="136" x2="640" y2="156" stroke="#0069FF" stroke-width="2" marker-end="url(#ar)"/>
+<rect x="318" y="158" width="205" height="205" rx="12" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="420.5" y="182" text-anchor="middle" font-size="13.5" font-weight="700" fill="#111827">Instanz TEST</text>
+<text x="420.5" y="200" text-anchor="middle" font-size="11" fill="#6B7280">neue Versionen zuerst</text>
+<text x="332" y="226" font-size="11.8" fill="#374151">• Oberfläche &amp; Anmeldung</text>
+<text x="332" y="248" font-size="11.8" fill="#374151">• Spracherkennung (Parakeet)</text>
+<text x="332" y="270" font-size="11.8" fill="#374151">• Satzerkennung (Silero)</text>
+<text x="332" y="292" font-size="11.8" fill="#374151">• Sprechererkennung</text>
+<text x="332" y="314" font-size="11.8" fill="#374151">• Treue- &amp; Belegprüfung</text>
+<text x="420.5" y="348" text-anchor="middle" font-size="11.8" font-weight="600" fill="#111827">eigene Datenbank + Audio</text>
+<rect x="537" y="158" width="205" height="205" rx="12" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="639.5" y="182" text-anchor="middle" font-size="13.5" font-weight="700" fill="#111827">Instanz PRODUKTIV</text>
+<text x="639.5" y="200" text-anchor="middle" font-size="11" fill="#6B7280">nur freigegebene Versionen</text>
+<text x="551" y="226" font-size="11.8" fill="#374151">• Oberfläche &amp; Anmeldung</text>
+<text x="551" y="248" font-size="11.8" fill="#374151">• Spracherkennung (Parakeet)</text>
+<text x="551" y="270" font-size="11.8" fill="#374151">• Satzerkennung (Silero)</text>
+<text x="551" y="292" font-size="11.8" fill="#374151">• Sprechererkennung</text>
+<text x="551" y="314" font-size="11.8" fill="#374151">• Treue- &amp; Belegprüfung</text>
+<text x="639.5" y="348" text-anchor="middle" font-size="11.8" font-weight="600" fill="#111827">eigene Datenbank + Audio</text>
+<line x1="345" y1="366" x2="345" y2="402" stroke="#7C3AED" stroke-width="2" marker-end="url(#arp)" marker-start="url(#arp)"/>
+<line x1="715" y1="366" x2="715" y2="402" stroke="#7C3AED" stroke-width="2" marker-end="url(#arp)" marker-start="url(#arp)"/>
+<text x="530" y="388" text-anchor="middle" font-size="11.5" fill="#6D28D9">Text hin · bereinigter Text / Protokoll zurück</text>
+<rect x="318" y="406" width="424" height="72" rx="12" fill="#F3EEFF" stroke="#DCCBFF"/>
+<text x="530" y="430" text-anchor="middle" font-size="13.5" font-weight="700" fill="#6D28D9">Eigenes Sprachmodell: Ministral 3 (Mistral AI)</text>
+<text x="530" y="450" text-anchor="middle" font-size="11.5" fill="#374151">läuft mit llama.cpp auf diesem Server · Apache-2.0</text>
+<text x="530" y="467" text-anchor="middle" font-size="11.5" fill="#374151">nur intern erreichbar · lernt nicht dazu · kein Kontakt zu Mistral</text>
+<rect x="318" y="494" width="424" height="50" rx="10" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="530" y="515" text-anchor="middle" font-size="12" font-weight="600" fill="#111827">Nächtliche Sicherung der Datenbanken (14 Tage)</text>
+<text x="530" y="532" text-anchor="middle" font-size="11" fill="#6B7280">automatische Sicherheitsupdates · fail2ban</text>
+<rect x="800" y="84" width="170" height="112" rx="12" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="885" y="108" text-anchor="middle" font-size="13.5" font-weight="700" fill="#111827">GitHub</text>
+<text x="885" y="128" text-anchor="middle" font-size="11.5" fill="#374151">Quellcode (öffentlich)</text>
+<text x="885" y="146" text-anchor="middle" font-size="11.5" fill="#374151">keine Daten, keine</text>
+<text x="885" y="162" text-anchor="middle" font-size="11.5" fill="#374151">Passwörter</text>
+<text x="885" y="182" text-anchor="middle" font-size="11" fill="#6B7280">Tests bei jeder Änderung</text>
+<line x1="798" y1="140" x2="762" y2="140" stroke="#6B7280" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arg)"/>
+<text x="885" y="216" text-anchor="middle" font-size="10.5" fill="#6B7280">Server holt Code alle</text>
+<text x="885" y="230" text-anchor="middle" font-size="10.5" fill="#6B7280">2 min (nur ausgehend)</text>
+<rect x="800" y="250" width="170" height="92" rx="12" fill="#F8F9FB" stroke="#D5D9E0"/>
+<text x="885" y="274" text-anchor="middle" font-size="13" font-weight="700" fill="#111827">Einmalig</text>
+<text x="885" y="294" text-anchor="middle" font-size="11.5" fill="#374151">Modell-Dateien laden</text>
+<text x="885" y="312" text-anchor="middle" font-size="11.5" fill="#374151">(GitHub, Hugging Face)</text>
+<text x="885" y="330" text-anchor="middle" font-size="11" fill="#6B7280">danach offline nutzbar</text>
+<line x1="798" y1="296" x2="762" y2="296" stroke="#6B7280" stroke-width="1.8" stroke-dasharray="5 4" marker-end="url(#arg)"/>
+<rect x="800" y="366" width="170" height="178" rx="12" fill="#E9F7EF" stroke="#BFE8CD"/>
+<text x="885" y="392" text-anchor="middle" font-size="13" font-weight="700" fill="#15803D">Kein Datenfluss</text>
+<text x="885" y="410" text-anchor="middle" font-size="13" font-weight="700" fill="#15803D">nach außen</text>
+<text x="885" y="436" text-anchor="middle" font-size="11.5" fill="#374151">keine externe KI</text>
+<text x="885" y="456" text-anchor="middle" font-size="11.5" fill="#374151">kein NOVA</text>
+<text x="885" y="476" text-anchor="middle" font-size="11.5" fill="#374151">kein Training</text>
+<text x="885" y="496" text-anchor="middle" font-size="11.5" fill="#374151">keine Drittländer</text>
+<text x="885" y="526" text-anchor="middle" font-size="11" fill="#6B7280">Audio &amp; Text bleiben hier</text>
+</svg>
+</div>
+<p class="small muted">Blaue Pfeile: Inhalte (Audio, Text) – nur zwischen Browser und Server und innerhalb des Servers. Graue gestrichelte Pfeile: ausgehende Verbindungen des Servers für Code und Modell-Dateien – ohne Nutzerdaten.</p>
+
+<h2>Die Bausteine in einem Satz</h2>
+<ul>
+<li><b>Browser</b>: nimmt auf, zeigt an, speichert nichts dauerhaft.</li>
+<li><b>Caddy</b>: einziger Eingang von außen, sorgt für HTTPS mit automatisch erneuertem Zertifikat.</li>
+<li><b>Instanz Test / Produktiv</b>: die eigentliche Anwendung, zweimal getrennt – neue Versionen laufen erst im Test, dann nach Freigabe produktiv. Jede hat ihre eigene Datenbank.</li>
+<li><b>Sprachmodell</b>: Ministral 3 von Mistral AI, einem französischen Anbieter. Wir nutzen nur die frei lizenzierte Modell-Datei; Mistral ist am Betrieb nicht beteiligt und erhält nichts.</li>
+<li><b>GitHub</b>: Ablage des Quellcodes. Der Server holt sich Änderungen selbst ab – GitHub kann nicht auf den Server zugreifen.</li>
+</ul>
+
+<h2>Leistung auf dem Testserver</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Schritt</th><th>Wert</th><th>Quelle</th></tr></thead>
+<tbody>
+<tr><td>Spracherkennung</td><td>ca. 9–10× Echtzeit auf 2 Kernen (Testserver: 8 Kerne)</td><td>gemessen (Entwicklung)</td></tr>
+<tr><td>Erster grauer Text / erster fester Satz</td><td>ca. 2 s / ca. 3 s</td><td>gemessen (Entwicklung)</td></tr>
+<tr><td>Sprechererkennung</td><td>ca. 1/5 der Aufnahmedauer (2 Kerne)</td><td>gemessen (Entwicklung)</td></tr>
+<tr><td>Sprachmodell (Bereinigung von 5 Sätzen)</td><td><span id="llm-infra">– noch nicht gemessen –</span></td><td>hier messbar ↓</td></tr>
+</tbody></table></div>
+<div class="measure"><button class="btn" id="llm-measure">Sprachmodell jetzt messen</button><span id="llm-result" class="muted">Misst direkt auf diesem Server.</span></div>
+
+<h2>Stufen und Kosten</h2>
+<div class="table-wrap"><table>
+<thead><tr><th>Stufe</th><th>Server</th><th>Kosten</th><th>Sprachmodell</th><th>Einsatz</th></tr></thead>
+<tbody>
+<tr><td><b>Test (jetzt)</b></td><td>Hetzner CPX42 – 8 vCPU, 16 GB, Nürnberg</td><td>0,133 €/Std., max. 83,29 €/Monat; stundengenau, jederzeit löschbar</td><td>Ministral 3 3B (CPU)</td><td>Nachweis, Abteilungstest</td></tr>
+<tr><td>Pilot mehrere Ämter</td><td>günstigerer CPU-Server (z. B. Hetzner CX43, sobald lieferbar, ca. 19 €/Monat) oder Server mit dedizierten Kernen</td><td>ca. 20–165 €/Monat</td><td>3B oder 8B</td><td>~20 gleichzeitige Aufnahmen (Schätzung)</td></tr>
+<tr><td><b>Regelbetrieb 2.500 Beschäftigte</b></td><td>GPU-Server (z. B. Hetzner GEX44, RTX 4000 Ada, 20 GB)</td><td>ca. 184 €/Monat + einmalige Einrichtung</td><td>Ministral 3 14B (GPU)</td><td>viele parallele Nutzer, deutlich bessere Protokolle</td></tr>
+<tr><td>Alternative</td><td>eigener GPU-Server im Rechenzentrum der Stadt</td><td>Anschaffung + Betrieb</td><td>wie oben</td><td>Daten verlassen das Haus nicht</td></tr>
+</tbody></table></div>
+<p>Wechsel zwischen den Stufen = neuer Server mit demselben Einrichtungsskript und eine Zeile Konfiguration. Am Code ändert sich nichts. Preise inkl. USt., Stand 09/2026; die Kapazitätsangaben für Pilot und Regelbetrieb sind Schätzungen.</p>
+
+<h2>Vor- und Nachteile dieser Infrastruktur</h2>
+<div class="grid2">
+<div class="box pro"><h4>Vorteile</h4><ul>
+<li>Geschlossenes System: keine externe KI, kein Datenfluss in fremde Clouds oder Drittländer.</li>
+<li>Arbeitsplatz braucht keine Leistung und keine Installation – läuft auf jedem Büro-PC und Handy.</li>
+<li>Starke Modelle, weil zentral gerechnet wird: bessere deutsche Erkennung, schnell, keine Freezes.</li>
+<li>Kein Modell im Browser-Cache – IT-Cache-Löschungen stören nicht.</li>
+<li>Offene Lizenzen, 0 € Lizenzkosten, kein Anbieter-Lock-in; Modelle austauschbar.</li>
+<li>Test und Produktiv getrennt; automatische, nachvollziehbare Auslieferung.</li>
+<li>Umzug ins eigene Rechenzentrum jederzeit möglich (gleiches Skript).</li>
+</ul></div>
+<div class="box con"><h4>Nachteile / Aufgaben</h4><ul>
+<li>Betriebsverantwortung liegt bei uns: Updates, Überwachung, Störungen – kein Hersteller-Support mit Reaktionszeiten.</li>
+<li>Wissen ist derzeit auf wenige Personen konzentriert; für den Regelbetrieb braucht es eine Vertretung und Betriebsdoku.</li>
+<li>Ein Server = ein Ausfallpunkt. Fällt er aus, steht der Dienst (Daten gesichert, Neuaufbau ca. 15 Min.).</li>
+<li>Audio wird zum Server übertragen (verschlüsselt) – bei reiner PC-Verarbeitung bliebe es am Platz.</li>
+<li>Laufende Serverkosten statt Einmalkauf.</li>
+<li>Bis zur städtischen Anmeldung (SSO) nur ein gemeinsames Passwort.</li>
+</ul></div>
+</div>
+
+<h2>Vergleich mit dem bisherigen Ansatz (BotBucket Audio-Transkriptor)</h2>
+<p>Der Vergleich beschreibt die Architektur, nicht die Zusammenarbeit mit dem Lieferanten. BotBucket bleibt für NOVA und Kilian die Plattform; hier geht es nur um die Transkription von Besprechungen.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Kriterium</th><th>Audio-Transkriptor (BotBucket)</th><th>Protokollant (Eigenbau)</th></tr></thead>
+<tbody>
+<tr><td>Wo wird gerechnet?</td><td>Im Browser auf dem Arbeitsplatz-PC</td><td>Zentral auf einem Server</td></tr>
+<tr><td>Spracherkennung</td><td>Whisper small (kleines Modell, damit es im Browser läuft)</td><td>Parakeet TDT 0.6B v3 (deutlich größer und genauer), optional Whisper large-v3-turbo German</td></tr>
+<tr><td>Geschwindigkeit</td><td>im Feldtest ca. 9 Min. Verarbeitung für 1 Min. Audio, teils Einfrieren</td><td>schneller als Echtzeit, Text live während des Sprechens</td></tr>
+<tr><td>Qualität Deutsch</td><td>im Feldtest nicht ausreichend</td><td>deutlich besser; Glossar und KI-Bereinigung zusätzlich</td></tr>
+<tr><td>Abhängigkeit vom PC</td><td>hoch – schwache PCs, Browser-Cache-Löschung erzwingt Neuladen des Modells</td><td>keine – Browser nimmt nur auf</td></tr>
+<tr><td>Sprechererkennung</td><td>im getesteten Stand nicht genutzt</td><td>ja, automatisch, umbenennbar</td></tr>
+<tr><td>Zusammenfassung</td><td>über NOVA</td><td>eigenes Sprachmodell auf demselben Server, mit Belegpflicht und Prüfungen</td></tr>
+<tr><td>Wo liegen Audio/Text?</td><td>Audio bleibt am PC (Vorteil); zur Zusammenfassung geht Text an NOVA</td><td>auf dem Server der Stadt (Test: Hetzner, Deutschland)</td></tr>
+<tr><td>Betrieb</td><td>Lieferant (Support, Verantwortung beim Anbieter)</td><td>eigenverantwortlich</td></tr>
+<tr><td>Kosten</td><td>Teil des BotBucket-Vertrags</td><td>Serverkosten (siehe Stufen), keine Lizenzkosten</td></tr>
+</tbody></table></div>
+<div class="callout"><b>Fazit:</b> Der Browser-Ansatz hat den Vorteil, dass Audio den PC nie verlässt – scheitert aber an der Rechenleistung der Büro-PCs: Nur kleine Modelle laufen dort, und die reichen für Deutsch in echten Besprechungen nicht. Der Server-Ansatz löst genau das und bleibt trotzdem geschlossen, weil auch die KI auf dem eigenen Server läuft.</div>
