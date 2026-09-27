@@ -3,7 +3,18 @@
 # Vorteil: GitHub braucht keinen Zugang zum Server – der Server holt sich den Code selbst.
 set -uo pipefail
 BASE=/opt/mitschrift
-source "$BASE/settings.env"
+# settings.env wörtlich einlesen (nicht per "source": Passwörter mit $ & ; Leerzeichen bleiben unverändert)
+load_settings() {
+  local k v
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+    k=${line%%=*}; v=${line#*=}
+    k=$(echo "$k" | tr -d '[:space:]')
+    [[ "$k" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+    printf -v "$k" '%s' "$v"; export "$k"
+  done < "$1"
+}
+load_settings "$BASE/settings.env"
 TEST_BRANCH=${TEST_BRANCH:-main}
 PROD_BRANCH=${PROD_BRANCH:-stable}
 

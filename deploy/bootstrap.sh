@@ -9,7 +9,18 @@
 #           LLM_HF_MODEL, PROD_BRANCH (Standard: stable), TEST_BRANCH (Standard: main)
 set -euo pipefail
 BASE=/opt/mitschrift
-source "$BASE/settings.env"
+# settings.env wörtlich einlesen (nicht per "source": Passwörter mit $ & ; Leerzeichen bleiben unverändert)
+load_settings() {
+  local k v
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ ^[[:space:]]*# || "$line" != *=* ]] && continue
+    k=${line%%=*}; v=${line#*=}
+    k=$(echo "$k" | tr -d '[:space:]')
+    [[ "$k" =~ ^[A-Z_][A-Z0-9_]*$ ]] || continue
+    printf -v "$k" '%s' "$v"; export "$k"
+  done < "$1"
+}
+load_settings "$BASE/settings.env"
 : "${REPO_URL:?REPO_URL fehlt in settings.env}"
 : "${ACCESS_PASSWORD:?ACCESS_PASSWORD fehlt in settings.env}"
 TEST_BRANCH=${TEST_BRANCH:-main}
@@ -66,7 +77,25 @@ for inst in test prod; do
   mkdir -p "$dir/data"
   if [ ! -f "$dir/.env" ]; then
     cp "$dir/.env.example" "$dir/.env"
-    set_env() { if grep -q "^$1=" "$dir/.env"; then sed -i "s|^$1=.*|$1=$2|" "$dir/.env"; else echo "$1=$2" >> "$dir/.env"; fi; }
+    # Wert wörtlich setzen (ohne sed-Sonderzeichen-Probleme); Passwort in einfachen Anführungszeichen,
+    # damit Docker Compose nichts ersetzt ($) und # nicht als Kommentar zählt.
+    set_env() { K="$1" V="$2" python3 - "$dir/.env" <<'PY'
+import os, sys
+p, k, v = sys.argv[1], os.environ["K"], os.environ["V"]
+if k == "ACCESS_PASSWORD" and "'" not in v:
+    v = "'" + v + "'"
+lines = open(p).read().splitlines()
+out, done = [], False
+for l in lines:
+    if l.split("=", 1)[0].strip() == k:
+        out.append(f"{k}={v}"); done = True
+    else:
+        out.append(l)
+if not done:
+    out.append(f"{k}={v}")
+open(p, "w").write("\n".join(out) + "\n")
+PY
+    }
     set_env INSTANCE "$inst"
     set_env ACCESS_PASSWORD "$ACCESS_PASSWORD"
     set_env SESSION_SECRET "$(openssl rand -hex 32)"

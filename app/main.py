@@ -53,7 +53,19 @@ def get_llm() -> LLMClient | None:
 
 
 def _load_models() -> None:
-    """Modell im Hintergrund laden – die Oberfläche ist sofort erreichbar und zeigt „Modell lädt …“."""
+    """Modell im Hintergrund laden – die Oberfläche ist sofort erreichbar und zeigt „Modell lädt …“.
+    Bei Fehlern (z. B. Netz beim ersten Download) wird mehrfach neu versucht."""
+    for attempt in range(1, 6):
+        _load_models_once()
+        if state.load_status != "fehler":
+            return
+        if attempt < 5:
+            log.warning("Neuer Ladeversuch in %ss (%s/5)", 15 * attempt, attempt + 1)
+            time.sleep(15 * attempt)
+            state.load_status, state.load_error = "lädt", ""
+
+
+def _load_models_once() -> None:
     t0 = time.perf_counter()
     try:
         backend = create_backend(settings)

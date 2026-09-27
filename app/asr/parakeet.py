@@ -10,13 +10,12 @@ from __future__ import annotations
 
 import logging
 import os
-import tarfile
 import threading
-import urllib.request
 from pathlib import Path
 
 import numpy as np
 
+from .. import modelcache
 from .base import ASRBackend, Utterance, Word
 
 log = logging.getLogger(__name__)
@@ -27,21 +26,17 @@ REQUIRED = ["encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "token
 
 
 def ensure_model(models_dir: str | Path, url: str = MODEL_URL) -> Path:
-    """Stellt sicher, dass das Modell lokal liegt; lädt es sonst einmalig herunter."""
+    """Stellt sicher, dass das Modell lokal liegt; lädt es sonst einmalig herunter.
+    Mehrere Instanzen mit gemeinsamem Modell-Ordner warten aufeinander (Dateisperre)."""
     models_dir = Path(models_dir)
     target = models_dir / MODEL_DIRNAME
     if all((target / f).exists() for f in REQUIRED):
         return target
-    models_dir.mkdir(parents=True, exist_ok=True)
-    archive = models_dir / f"{MODEL_DIRNAME}.tar.bz2.part"
-    log.info("Lade Parakeet-Modell (~490 MB) von %s …", url)
-    with urllib.request.urlopen(url, timeout=60) as r, open(archive, "wb") as f:
-        while chunk := r.read(1 << 20):
-            f.write(chunk)
-    log.info("Entpacke Modell …")
-    with tarfile.open(archive, "r:bz2") as tar:
-        tar.extractall(models_dir, filter="data")
-    archive.unlink(missing_ok=True)
+    with modelcache.download_lock(models_dir):
+        if all((target / f).exists() for f in REQUIRED):  # die andere Instanz war schneller
+            return target
+        log.info("Lade Parakeet-Modell (~490 MB) …")
+        modelcache.fetch_archive(url, models_dir, MODEL_DIRNAME)
     missing = [f for f in REQUIRED if not (target / f).exists()]
     if missing:
         raise RuntimeError(f"Modellpaket unvollständig, fehlt: {missing}")
@@ -59,16 +54,28 @@ class ParakeetBackend(ASRBackend):
         self.model_dir = d
         self.device = device
         self.threads = threads or max(1, os.cpu_count() or 2)
-        self._rec = sherpa_onnx.OfflineRecognizer.from_transducer(
-            encoder=str(d / "encoder.int8.onnx"),
-            decoder=str(d / "decoder.int8.onnx"),
-            joiner=str(d / "joiner.int8.onnx"),
-            tokens=str(d / "tokens.txt"),
-            num_threads=self.threads,
-            model_type="nemo_transducer",
-            decoding_method="greedy_search",
-            provider="cuda" if device == "cuda" else "cpu",
-        )
+
+        def load():
+            return sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=str(d / "encoder.int8.onnx"),
+                decoder=str(d / "decoder.int8.onnx"),
+                joiner=str(d / "joiner.int8.onnx"),
+                tokens=str(d / "tokens.txt"),
+                num_threads=self.threads,
+                model_type="nemo_transducer",
+                decoding_method="greedy_search",
+                provider="cuda" if device == "cuda" else "cpu",
+            )
+
+        try:
+            self._rec = load()
+        except Exception:
+            if model_dir:  # manuell vorgegebener Ordner: nicht anfassen
+                raise
+            # Beschädigter Download (z. B. abgebrochen) → einmal neu laden
+            modelcache.purge(d)
+            d = ensure_model(models_dir)
+            self._rec = load()
         # sherpa-onnx-Recognizer ist threadsicher für getrennte Streams, wir serialisieren trotzdem
         # pro Aufruf, damit Live und Upload sich nicht gegenseitig die Kerne halbieren.
         self._lock = threading.Lock()

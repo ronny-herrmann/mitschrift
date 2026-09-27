@@ -13,13 +13,12 @@ wird das Segment an der Wortgrenze geteilt.
 from __future__ import annotations
 
 import logging
-import tarfile
 import threading
-import urllib.request
 from pathlib import Path
 
 import numpy as np
 
+from . import modelcache
 from .store import Segment
 
 log = logging.getLogger(__name__)
@@ -30,28 +29,17 @@ EMB_FILE = "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx"
 EMB_URL = f"https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/{EMB_FILE}"
 
 
-def _download(url: str, dest: Path) -> None:
-    tmp = dest.with_suffix(dest.suffix + ".part")
-    log.info("Lade %s …", url)
-    with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
-        while chunk := r.read(1 << 20):
-            f.write(chunk)
-    tmp.rename(dest)
-
-
 def ensure_models(models_dir: str | Path) -> tuple[Path, Path]:
     models_dir = Path(models_dir)
-    models_dir.mkdir(parents=True, exist_ok=True)
     seg = models_dir / SEG_DIR / "model.onnx"
-    if not seg.exists():
-        archive = models_dir / f"{SEG_DIR}.tar.bz2"
-        _download(SEG_URL, archive)
-        with tarfile.open(archive, "r:bz2") as tar:
-            tar.extractall(models_dir, filter="data")
-        archive.unlink(missing_ok=True)
     emb = models_dir / EMB_FILE
-    if not emb.exists():
-        _download(EMB_URL, emb)
+    if seg.exists() and emb.exists():
+        return seg, emb
+    with modelcache.download_lock(models_dir):
+        if not seg.exists():
+            modelcache.fetch_archive(SEG_URL, models_dir, SEG_DIR)
+        if not emb.exists():
+            modelcache.download(EMB_URL, emb)
     return seg, emb
 
 
