@@ -65,7 +65,8 @@ def parse_lines(text: str) -> dict[int, str]:
     for line in text.splitlines():
         m = _LINE.match(line)
         if m:
-            out[int(m.group(1))] = m.group(2).strip()
+            # Markdown-Hervorhebungen, die kleine Modelle gern setzen (**Excel**), entfernen
+            out[int(m.group(1))] = re.sub(r"(\*\*|__)(.+?)\1", r"\2", m.group(2)).strip()
     return out
 
 

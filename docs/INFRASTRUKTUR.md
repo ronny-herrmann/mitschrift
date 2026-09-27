@@ -41,12 +41,12 @@ Alles läuft auf **einem Server in Deutschland**. Es gibt keine externe KI-API, 
 
 | Stufe | Server | Kosten/Monat | Sprachmodell | Kapazität (Schätzung) |
 |---|---|---|---|---|
-| **Test** (jetzt) | Hetzner CX43 – 8 vCPU, 16 GB | ca. 19 € | Ministral 3 **3B** (CPU) | Abteilungstest; Bereinigung ~1 Satz/2–3 s, Zusammenfassung 20-min-Sitzung ~1–3 min |
+| **Test** (jetzt) | Hetzner CPX42 – 8 vCPU, 16 GB (CX43 derzeit nicht lieferbar) | 0,133 €/Std., max. 83,29 €/Monat | Ministral 3 **3B** (CPU) | Abteilungstest; gemessen: 5 Sätze bereinigt in ca. 3–4 s (~30 Tokens/s) |
 | Pilot mehrere Ämter | Hetzner CCX33 – 8 dedizierte vCPU, 32 GB | ca. 165 € | Ministral 3 **3B/8B** (CPU) | ~20 gleichzeitige Aufnahmen |
 | **Produktiv (2.500 Nutzer)** | Hetzner **GEX44** – RTX 4000 SFF Ada 20 GB | ca. 184 € + einmalige Einrichtung | Ministral 3 **14B** (GPU) | Spracherkennung >500× Echtzeit, Sprachmodell für viele parallele Nutzer |
 | alternativ | GPU-Server im Rathaus-Rechenzentrum | Anschaffung | wie oben | Datenschutz wie „lokal“ |
 
-Die CPU-Zahlen für das Sprachmodell sind Schätzungen und werden nach dem Aufsetzen auf dem Testserver gemessen. Die Spracherkennung ist gemessen.
+Spracherkennung und Sprachmodell (3B) sind gemessen; die Kapazitätsangaben für Pilot und Regelbetrieb sind Schätzungen.
 
 Wechsel zwischen den Stufen = anderer Server + eine Zeile in `settings.env` (`LLM_HF_MODEL`). Am Code ändert sich nichts.
 

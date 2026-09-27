@@ -217,41 +217,35 @@ async def get_doc(name: str):
 
 
 @app.post("/api/llm/test", dependencies=[Depends(require_auth)])
-async def llm_test():
-    """Misst das Sprachmodell mit einer typischen Bereinigungs-Anfrage (für Betrieb und Doku)."""
-    if not settings.llm_configured:
+def llm_test():
+    """Misst das Sprachmodell mit der echten Bereinigung (gleiche Anweisung und Treue-Prüfung wie im Betrieb)."""
+    llm = get_llm()
+    if llm is None:
         raise HTTPException(400, "Kein Sprachmodell konfiguriert")
-    import httpx
+    from .bereinigung import clean_segments, fidelity
+    from .store import Segment
 
-    user = ("Bereinige die Zeilen, ohne Inhalt zu ändern. Antworte nur mit den Zeilen.\n"
-            "[S0] ähm ja also wir haben ähm die Tabelle im CHS gepflegt und die ist jetzt fertig\n"
-            "[S1] genau und äh am Montag schicken wir das an die Kämmerei raus\n"
-            "[S2] der Haushaltsentwurf 2027 wird dann im Ausschuss äh vorgestellt\n"
-            "[S3] Frau Müller übernimmt die Nachfrage bis Freitag\n"
-            "[S4] gut dann machen wir das so")
-    body = {"model": settings.llm_model, "temperature": 0,
-            "messages": [{"role": "system", "content": "Du korrigierst deutsche Transkripte. Aus CHS wird Excel."},
-                         {"role": "user", "content": user}]}
+    saetze = [
+        "ähm ja also wir haben ähm die Tabelle im CHS gepflegt und die ist jetzt fertig",
+        "genau und äh am Montag schicken wir das an die Kämmerei raus",
+        "der Haushaltsentwurf 2027 wird dann im Ausschuss äh vorgestellt",
+        "Frau Müller übernimmt die die Nachfrage bis Freitag",
+        "gut dann machen wir das so",
+    ]
+    segs = [Segment(i, float(i * 5), float(i * 5 + 4), t, "") for i, t in enumerate(saetze)]
     t0 = time.perf_counter()
     try:
-        async with httpx.AsyncClient(timeout=settings.llm_timeout_s) as c:
-            r = await c.post(f"{settings.llm_base_url.rstrip('/')}/chat/completions", json=body,
-                             headers={"Authorization": f"Bearer {settings.llm_api_key}"} if settings.llm_api_key else {})
-            r.raise_for_status()
-            data = r.json()
+        cleaned = clean_segments(llm, segs, [{"von": "CHS", "zu": "Excel"}])
     except Exception as e:
         raise HTTPException(503, f"Sprachmodell nicht erreichbar oder lädt noch: {e}")
     secs = round(time.perf_counter() - t0, 2)
-    usage, timings = data.get("usage") or {}, data.get("timings") or {}
-    return {
-        "sekunden": secs,
-        "antwort": data["choices"][0]["message"]["content"],
-        "tokens_eingabe": usage.get("prompt_tokens"),
-        "tokens_ausgabe": usage.get("completion_tokens"),
-        "tokens_pro_sekunde_ausgabe": round(timings["predicted_per_second"], 1) if "predicted_per_second" in timings else None,
-        "tokens_pro_sekunde_eingabe": round(timings["prompt_per_second"], 1) if "prompt_per_second" in timings else None,
-        "modell": data.get("model"),
-    }
+    zeilen = []
+    for s in segs:
+        neu = cleaned.get(s.idx, "")
+        ok, grund = fidelity(s.text, neu) if neu else (False, "fehlt")
+        zeilen.append({"original": s.text, "bereinigt": neu, "ok": ok, "grund": grund})
+    return {"sekunden": secs, "zeilen": zeilen, "modell": settings.llm_model,
+            "tokens_pro_sekunde_ausgabe": None, "tokens_pro_sekunde_eingabe": None}
 
 
 @app.get("/api/health", dependencies=[Depends(require_auth)])

@@ -402,8 +402,10 @@
       btn.disabled = true; btn.textContent = 'Misst …';
       try {
         const r = await api('/api/llm/test', { method: 'POST' });
-        $('#llm-result', doc).innerHTML = `Antwort nach <b>${r.sekunden} s</b> · ${r.tokens_pro_sekunde_ausgabe ?? '–'} Tokens/s beim Schreiben · ${r.tokens_pro_sekunde_eingabe ?? '–'} Tokens/s beim Lesen`;
-        const cell = $('#llm-infra', doc); if (cell) cell.textContent = `${r.sekunden} s (${r.tokens_pro_sekunde_ausgabe ?? '–'} Tokens/s)`;
+        const okN = r.zeilen.filter((z) => z.ok).length;
+        $('#llm-result', doc).innerHTML = `5 Sätze bereinigt in <b>${r.sekunden} s</b> · ${okN}/5 bestehen die Treue-Prüfung`
+          + `<ul class="small">${r.zeilen.map((z) => `<li>${esc(z.bereinigt || '–')} ${z.ok ? '' : `<span class="tag mittel">${esc(z.grund)}</span>`}</li>`).join('')}</ul>`;
+        const cell = $('#llm-infra', doc); if (cell) cell.textContent = `${r.sekunden} s für 5 Sätze`;
       } catch (e) { $('#llm-result', doc).textContent = e.message; }
       btn.disabled = false; btn.textContent = 'Erneut messen';
     });
