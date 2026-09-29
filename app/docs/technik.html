@@ -10,7 +10,7 @@
 <tr><td>Spracherkennung</td><td>NVIDIA Parakeet TDT 0.6B v3, int8, über sherpa-onnx (ONNX Runtime)</td><td>CC-BY-4.0 (Modell), Apache-2.0</td><td>Sprache → Text mit Wort-Zeitstempeln</td></tr>
 <tr><td>Satz-/Pausenerkennung</td><td>Silero VAD (ONNX, im Code enthalten)</td><td>MIT</td><td>erkennt Sprechpausen, schneidet Sätze</td></tr>
 <tr><td>Sprechererkennung</td><td>pyannote Segmentation 3.0 + 3D-Speaker ERes2Net, über sherpa-onnx</td><td>MIT / Apache-2.0</td><td>„Sprecher 1/2/…“ unterscheiden</td></tr>
-<tr><td>Sprachmodell (KI)</td><td>Ministral 3 von Mistral AI (Frankreich), 3B-Variante, Q4_K_M, über llama.cpp</td><td>Apache-2.0 / MIT</td><td>Text bereinigen, Protokoll schreiben</td></tr>
+<tr><td>Sprachmodell (KI)</td><td>Ministral 3 von Mistral AI (Frankreich), 8B-Variante, Q4_K_M, über llama.cpp</td><td>Apache-2.0 / MIT</td><td>Text bereinigen, Protokoll schreiben</td></tr>
 <tr><td>Datenhaltung</td><td>SQLite-Datenbank + WAV-Dateien je Instanz</td><td>gemeinfrei</td><td>Transkripte, Protokolle, Glossar, Audio</td></tr>
 <tr><td>HTTPS</td><td>Caddy 2 mit Let's-Encrypt-Zertifikaten</td><td>Apache-2.0</td><td>Verschlüsselung, Sicherheits-Header, Weiterleitung</td></tr>
 <tr><td>Betrieb</td><td>Docker, Docker Compose, Ubuntu 24.04</td><td>Apache-2.0 / GPL</td><td>Container, Neustarts, Isolation</td></tr>
@@ -66,7 +66,7 @@
 
 <h2>Sprachmodell</h2>
 <ul>
-<li>Modell: <b>Ministral 3, 3B Instruct</b> (Dezember 2025) von Mistral AI, Datei im GGUF-Format, 4-bit-Quantisierung (Q4_K_M, ca. 2,2 GB).</li>
+<li>Modell: <b>Ministral 3, 8B Instruct</b> (Dezember 2025) von Mistral AI, Datei im GGUF-Format, 4-bit-Quantisierung (Q4_K_M, ca. 5,2 GB). Lizenz Apache-2.0: kostenfrei, auch für Verwaltung und gewerbliche Nutzung. Seit 29.09.2026 statt der 3B-Variante – deutlich besseres Deutsch, dafür etwa dreimal langsamer (gemessen: 5 Sätze in ca. 13,5 s statt 3–4 s).</li>
 <li>Laufzeit: llama.cpp-Server mit OpenAI-kompatibler Schnittstelle, Kontext 24.576 Tokens, 2 parallele Anfragen, Temperatur 0 (möglichst deterministisch).</li>
 <li>Nur im internen Docker-Netz erreichbar, kein Port nach außen.</li>
 <li>Größere Varianten (8B, 14B) sind ohne Code-Änderung einsetzbar – eine Zeile in der Server-Konfiguration. 14B ist für den Regelbetrieb auf einem GPU-Server vorgesehen.</li>
@@ -148,7 +148,7 @@
 <ul>
 <li>Ein gemeinsames Zugangspasswort, keine Benutzerkonten – alle Angemeldeten sehen alle Aufnahmen (Regelbetrieb: städtisches Konto/SSO).</li>
 <li>Kein Protokoll darüber, wer wann was geöffnet hat (Audit-Log geplant).</li>
-<li>Das kleine 3B-Sprachmodell formuliert einfacher als große Modelle; die Prüfungen verhindern Erfundenes, nicht aber holprige Sätze.</li>
+<li>Das 8B-Sprachmodell formuliert einfacher als große Modelle; die Prüfungen verhindern Erfundenes, nicht aber holprige Sätze.</li>
 <li>Überlappendes Sprechen und sehr leise, entfernte Sprecher senken die Qualität deutlich – das Mikrofon ist der größte Hebel.</li>
 <li>Deutsch ist die Hauptsprache; Parakeet erkennt 25 europäische Sprachen, bereinigt und zusammengefasst wird auf Deutsch.</li>
 </ul>

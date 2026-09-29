@@ -47,7 +47,7 @@
 <line x1="715" y1="366" x2="715" y2="402" stroke="#7C3AED" stroke-width="2" marker-end="url(#arp)" marker-start="url(#arp)"/>
 <text x="530" y="388" text-anchor="middle" font-size="11.5" fill="#6D28D9">Text hin · bereinigter Text / Protokoll zurück</text>
 <rect x="318" y="406" width="424" height="72" rx="12" fill="#F3EEFF" stroke="#DCCBFF"/>
-<text x="530" y="430" text-anchor="middle" font-size="13.5" font-weight="700" fill="#6D28D9">Eigenes Sprachmodell: Ministral 3 (Mistral AI)</text>
+<text x="530" y="430" text-anchor="middle" font-size="13.5" font-weight="700" fill="#6D28D9">Eigenes Sprachmodell: Ministral 3 8B (Mistral AI)</text>
 <text x="530" y="450" text-anchor="middle" font-size="11.5" fill="#374151">läuft mit llama.cpp auf diesem Server · Apache-2.0</text>
 <text x="530" y="467" text-anchor="middle" font-size="11.5" fill="#374151">nur intern erreichbar · lernt nicht dazu · kein Kontakt zu Mistral</text>
 <rect x="318" y="494" width="424" height="50" rx="10" fill="#F8F9FB" stroke="#D5D9E0"/>
@@ -85,7 +85,7 @@
 <li><b>Browser</b>: nimmt auf, zeigt an, speichert nichts dauerhaft.</li>
 <li><b>Caddy</b>: einziger Eingang von außen, sorgt für HTTPS mit automatisch erneuertem Zertifikat.</li>
 <li><b>Instanz Test / Produktiv</b>: die eigentliche Anwendung, zweimal getrennt – neue Versionen laufen erst im Test, dann nach Freigabe produktiv. Jede hat ihre eigene Datenbank.</li>
-<li><b>Sprachmodell</b>: Ministral 3 von Mistral AI, einem französischen Anbieter. Wir nutzen nur die frei lizenzierte Modell-Datei; Mistral ist am Betrieb nicht beteiligt und erhält nichts.</li>
+<li><b>Sprachmodell</b>: Ministral 3 8B von Mistral AI (Apache-2.0, kostenfrei), einem französischen Anbieter. Wir nutzen nur die frei lizenzierte Modell-Datei; Mistral ist am Betrieb nicht beteiligt und erhält nichts.</li>
 <li><b>GitHub</b>: Ablage des Quellcodes. Der Server holt sich Änderungen selbst ab – GitHub kann nicht auf den Server zugreifen.</li>
 </ul>
 
@@ -96,7 +96,7 @@
 <tr><td>Spracherkennung</td><td>ca. 9–10× Echtzeit auf 2 Kernen (Testserver: 8 Kerne)</td><td>gemessen (Entwicklung)</td></tr>
 <tr><td>Erster grauer Text / erster fester Satz</td><td>ca. 2 s / ca. 3 s</td><td>gemessen (Entwicklung)</td></tr>
 <tr><td>Sprechererkennung</td><td>ca. 1/5 der Aufnahmedauer (2 Kerne)</td><td>gemessen (Entwicklung)</td></tr>
-<tr><td>Sprachmodell Ministral 3 3B</td><td><span id="llm-infra">ca. 3–4 s für 5 Sätze</span> · ca. 30 Tokens/s beim Schreiben, ca. 160 Tokens/s beim Lesen</td><td>gemessen auf dem Testserver (27.09.2026), jederzeit neu messbar ↓</td></tr>
+<tr><td>Sprachmodell Ministral 3 8B</td><td><span id="llm-infra">ca. 13,5 s für 5 Sätze</span> · 5/5 bestehen die Treue-Prüfung (zum Vergleich 3B: ca. 3–4 s)</td><td>gemessen auf dem Testserver (29.09.2026), jederzeit neu messbar ↓</td></tr>
 </tbody></table></div>
 <div class="measure"><button class="btn" id="llm-measure">Sprachmodell jetzt messen</button><span id="llm-result" class="muted">Misst direkt auf diesem Server.</span></div>
 
@@ -104,7 +104,7 @@
 <div class="table-wrap"><table>
 <thead><tr><th>Stufe</th><th>Server</th><th>Kosten</th><th>Sprachmodell</th><th>Einsatz</th></tr></thead>
 <tbody>
-<tr><td><b>Test (jetzt)</b></td><td>Hetzner CPX42 – 8 vCPU, 16 GB, Nürnberg</td><td>0,133 €/Std., max. 83,29 €/Monat; stundengenau, jederzeit löschbar</td><td>Ministral 3 3B (CPU)</td><td>Nachweis, Abteilungstest</td></tr>
+<tr><td><b>Test (jetzt)</b></td><td>Hetzner CPX42 – 8 vCPU, 16 GB, Nürnberg</td><td>0,133 €/Std., max. 83,29 €/Monat; stundengenau, jederzeit löschbar</td><td>Ministral 3 8B (CPU)</td><td>Nachweis, Abteilungstest</td></tr>
 <tr><td>Pilot mehrere Ämter</td><td>günstigerer CPU-Server (z. B. Hetzner CX43, sobald lieferbar, ca. 19 €/Monat) oder Server mit dedizierten Kernen</td><td>ca. 20–165 €/Monat</td><td>3B oder 8B</td><td>~20 gleichzeitige Aufnahmen (Schätzung)</td></tr>
 <tr><td><b>Regelbetrieb 2.500 Beschäftigte</b></td><td>GPU-Server (z. B. Hetzner GEX44, RTX 4000 Ada, 20 GB)</td><td>ca. 184 €/Monat + einmalige Einrichtung</td><td>Ministral 3 14B (GPU)</td><td>viele parallele Nutzer, deutlich bessere Protokolle</td></tr>
 <tr><td>Alternative</td><td>eigener GPU-Server im Rechenzentrum der Stadt</td><td>Anschaffung + Betrieb</td><td>wie oben</td><td>Daten verlassen das Haus nicht</td></tr>
