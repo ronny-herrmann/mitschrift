@@ -105,13 +105,14 @@ class Transcriber:
         progress: Callable[[int, int], None] | None = None,
         batch_size: int = 4,
         backend: ASRBackend | None = None,
+        entries: list[dict] | None = None,
     ) -> tuple[list[Segment], float]:
         """Ganze Aufnahme transkribieren → (Segmente, Rechenzeit in Sekunden)."""
         backend = backend or self.final_backend
         t0 = time.perf_counter()
         with self._vad_lock:
             speech = segment_audio(audio, self.vad, **self.vad_kwargs(offline=True))
-        entries = self._glossar()
+        entries = entries if entries is not None else self._glossar()
         rules = compile_glossar(entries)
         if hasattr(backend, "set_hotwords"):
             backend.set_hotwords([e["zu"] for e in entries])

@@ -94,6 +94,10 @@ def _refs_in(line: str) -> list[int]:
     return nums
 
 
+NEUTRAL = {"keine", "keine.", "kein thema eindeutig erkennbar.", "dazu wurde nichts belegbares gesagt.",
+           "keine belegbaren inhalte in diesem abschnitt."}
+
+
 def verify(t: Transcript, protokoll_md: str) -> dict:
     """Prüft jede Inhaltszeile auf Belege. Liefert Statistik + markierte Zeilen."""
     valid = {s.idx for s in t.segments}
@@ -106,7 +110,7 @@ def verify(t: Transcript, protokoll_md: str) -> dict:
         line = raw.rstrip()
         stripped = line.strip()
         is_heading = stripped.startswith("#")
-        is_content = bool(stripped) and not is_heading and stripped.lower() not in ("keine", "- keine", "keine.", "kein thema eindeutig erkennbar.")
+        is_content = bool(stripped) and not is_heading and stripped.lower().lstrip("- ") not in NEUTRAL
         refs = _refs_in(line) if is_content else []
         bad = [r for r in refs if r not in valid]
         status = "ok" if is_content else "neutral"
@@ -244,7 +248,7 @@ Schreibe jede Zeile genau in einer dieser Formen:
 THEMA: worum es in diesem Abschnitt geht, ein kurzer Satz [S<Nummer>]
 AUSSAGE: ein wichtiger Inhalt, ein Satz mit den Worten des Transkripts [S<Nummer>]
 BESCHLUSS: nur wenn ausdrücklich etwas beschlossen oder vereinbart wurde [S<Nummer>]
-AUFGABE: nur wenn jemand etwas übernimmt – wer, was, bis wann [S<Nummer>]
+AUFGABE: nur wenn jemand etwas übernimmt – Wer | Was | Bis wann (Unbekanntes als –) [S<Nummer>]
 FRAGE: nur wenn eine Frage offen geblieben ist [S<Nummer>]
 
 Regeln:
@@ -252,11 +256,23 @@ Regeln:
 - Nur Inhalte aus diesem Abschnitt, keine Annahmen, kein Allgemeinwissen, keine Namen, die nicht vorkommen.
 - Die Nummer in eckigen Klammern ist die Segmentnummer, aus der der Inhalt stammt, z. B. [S12].
 - Keine Überschriften, keine Einleitung, keine Erklärungen.
-
+{top_regel}
 ABSCHNITT (Segmentnummer | Zeit | Sprecher):
 {transkript}"""
 
-_ITEM = re.compile(r"^\s*[-*•]?\s*\**(THEMA|AUSSAGE|BESCHLUSS|AUFGABE|FRAGE)\**\s*:\s*(.+?)\s*$", re.IGNORECASE)
+_ITEM = re.compile(r"^\s*[-*•]?\s*\**(THEMA|AUSSAGE|BESCHLUSS|AUFGABE|FRAGE)\**\s*(?:[(\[]\s*TOP\s*(\d+)\s*[)\]])?\s*:\s*(.+?)\s*$",
+                   re.IGNORECASE)
+
+TOP_REGEL = """- Die Sitzung hat diese Tagesordnung:
+{liste}
+  Schreibe bei AUSSAGE, BESCHLUSS, AUFGABE und FRAGE direkt nach dem Wort die Nummer des passenden Punkts,
+  z. B. „AUSSAGE (TOP 2): …“. Passt kein Punkt: „(TOP 0)“.
+"""
+
+
+def _dash(x: str) -> str:
+    x = x.strip().strip("-–").strip()
+    return "" if x.lower() in ("", "–", "-", "unbekannt", "offen", "keine angabe", "k. a.") else x
 
 
 def parse_items(text: str) -> list[dict]:
@@ -265,12 +281,22 @@ def parse_items(text: str) -> list[dict]:
         m = _ITEM.match(line)
         if not m:
             continue
-        body = m.group(2)
+        typ, top, body = m.group(1).upper(), m.group(2), m.group(3)
         refs = _refs_in(body)
         body = re.sub(r"\s*\[[^\]]*\]\s*", " ", body).strip().rstrip(" -–")
         body = re.sub(r"(\*\*|__)(.+?)\1", r"\2", body)
-        if body:
-            out.append({"typ": m.group(1).upper(), "text": body, "refs": refs})
+        if not body:
+            continue
+        item = {"typ": typ, "text": body, "refs": refs}
+        if top is not None:
+            item["top"] = int(top)
+        if typ == "AUFGABE" and "|" in body:
+            teile = [p.strip() for p in body.split("|")] + ["", ""]
+            item["wer"], item["was"], item["bis"] = _dash(teile[0]), _dash(teile[1]), _dash(teile[2])
+            if not item["was"]:
+                continue
+            item["text"] = (f"{item['wer']}: " if item["wer"] else "") + item["was"] + (f" – bis {item['bis'].removeprefix('bis ').strip()}" if item["bis"] else "")
+        out.append(item)
     return out
 
 
@@ -350,8 +376,9 @@ def _liste(items: list[dict], leer: str = "keine") -> list[str]:
     return [f"- {it['text']} {_ref(it)}" for it in items] or [leer]
 
 
-def assemble(t: Transcript, style: str, abschnitte: list[dict]) -> str:
-    """Protokoll aus geprüften Zeilen bauen – rein mechanisch, ohne KI."""
+def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: list[str] | None = None) -> str:
+    """Protokoll aus geprüften Zeilen bauen – rein mechanisch, ohne KI. Mit Tagesordnung gliedert sich
+    das Ergebnisprotokoll nach deren Punkten."""
     alle = [it for a in abschnitte for it in a["items"]]
     typ = lambda k: _dedupe([it for it in alle if it["typ"] == k])  # noqa: E731
     themen, aussagen = typ("THEMA"), typ("AUSSAGE")
@@ -369,6 +396,17 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict]) -> str:
         out += ["", "## Kernaussagen", *_liste(_dedupe(kurz)[:8])]
         out += ["", "## Entscheidungen", *_liste(beschl), "", "## Aufgaben", *_liste(aufg),
                 "", "## Offene Fragen", *_liste(fragen)]
+    elif style == "ergebnis" and tagesordnung:
+        for n, titel in enumerate(tagesordnung, 1):
+            sub = _dedupe([it for it in alle if it.get("top") == n and it["typ"] != "THEMA"])
+            out += [f"## TOP {n}: {titel}"]
+            order = {"BESCHLUSS": "Beschluss: ", "AUFGABE": "Aufgabe: ", "FRAGE": "Offen: "}
+            out += [f"- {order.get(it['typ'], '')}{it['text']} {_ref(it)}" for it in sub] or ["Dazu wurde nichts Belegbares gesagt."]
+            out.append("")
+        rest = _dedupe([it for it in alle if it["typ"] != "THEMA" and not (1 <= (it.get("top") or 0) <= len(tagesordnung))])
+        if rest:
+            out += ["## Sonstiges", *[f"- {it['text']} {_ref(it)}" for it in rest], ""]
+        out += ["## Beschlüsse im Überblick", *_liste(beschl), "", "## Aufgaben", *_liste(aufg)]
     elif style == "ergebnis":
         out += ["## Themen", *([f"{i}. {it['text']} {_ref(it)}" for i, it in enumerate(themen, 1)] or ["keine"])]
         out += ["", "## Ergebnisse"]
@@ -399,23 +437,26 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict]) -> str:
     return "\n".join(out).strip() + "\n"
 
 
-def transcript_hash(t: Transcript) -> str:
+def transcript_hash(t: Transcript, tagesordnung: list[str] | None = None) -> str:
     import hashlib
-    h = hashlib.sha1()
+    h = hashlib.sha1("|".join(tagesordnung or []).encode())
     for s in t.segments:
         h.update(f"{s.idx}|{s.speaker}|{s.clean or s.text}\n".encode())
     return h.hexdigest()[:16]
 
 
-def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None, workers: int = 2) -> dict:
+def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None, workers: int = 2,
+            tagesordnung: list[str] | None = None) -> dict:
     """Stufe 1+2: Zeilen je Abschnitt von der KI holen (bis zu `workers` gleichzeitig) und prüfen."""
     from .bereinigung import parallel_blocks
     blocks = _seg_blocks(t, max_chars)
 
     def run(i, block):
         max_aussagen = max(3, min(8, len(block) // 3))
-        raw = llm.chat(EXTRACT_SYSTEM, EXTRACT_USER.format(transkript=_block_text(block), max_aussagen=max_aussagen),
-                       temperature=0.0)
+        top_regel = TOP_REGEL.format(liste="\n".join(f"  TOP {n}: {x}" for n, x in enumerate(tagesordnung, 1))) \
+            if tagesordnung else ""
+        raw = llm.chat(EXTRACT_SYSTEM, EXTRACT_USER.format(transkript=_block_text(block), max_aussagen=max_aussagen,
+                                                           top_regel=top_regel), temperature=0.0)
         return check_items(parse_items(raw), block)
 
     results = parallel_blocks(blocks, run, lambda b: sum(len(s.clean or s.text) for s in b), workers, progress)
@@ -423,24 +464,25 @@ def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None,
     for block, (ok, bad) in zip(blocks, results):
         abschnitte.append({"start": block[0].start, "end": block[-1].end, "items": ok})
         verworfen += bad
-    return {"hash": transcript_hash(t), "abschnitte": abschnitte, "verworfen": verworfen}
+    return {"hash": transcript_hash(t, tagesordnung), "abschnitte": abschnitte, "verworfen": verworfen}
 
 
 def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars: int = 5000,
-                     progress=None, cache: dict | None = None, workers: int = 2) -> dict:
+                     progress=None, cache: dict | None = None, workers: int = 2,
+                     tagesordnung: list[str] | None = None) -> dict:
     """Belegte Protokollerstellung. Mit gültigem Zwischenspeicher (cache) ohne erneuten KI-Aufruf."""
     style = style if style in STYLES else "zusammenfassung"
-    if cache and cache.get("hash") == transcript_hash(t):
+    if cache and cache.get("hash") == transcript_hash(t, tagesordnung):
         ex = cache
     else:
         if llm is None:
             raise ValueError("Keine KI angebunden")
-        ex = extract(t, llm, max_chars, progress, workers)
+        ex = extract(t, llm, max_chars, progress, workers, tagesordnung)
     n_ok = sum(len(a["items"]) for a in ex["abschnitte"])
     if not n_ok:
         raise ValueError("Im Transkript wurden keine belegbaren Inhalte gefunden. Es wird kein Protokoll erzeugt, "
                          "damit nichts erfunden wird.")
-    md = assemble(t, style, ex["abschnitte"])
+    md = assemble(t, style, ex["abschnitte"], tagesordnung)
     return {
         "style": style,
         "protokoll_md": md,

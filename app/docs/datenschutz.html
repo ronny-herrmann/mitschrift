@@ -27,8 +27,10 @@
 <tbody>
 <tr><td>Audio</td><td>Stimme der Teilnehmenden</td><td>WAV/Originaldatei, Frist (Test 7 Tage), einzeln löschbar</td></tr>
 <tr><td>Gesprochene Inhalte als Text</td><td>alles, was in der Besprechung gesagt wird – kann auch Daten Dritter oder besondere Kategorien (Art. 9 DSGVO) enthalten</td><td>Datenbank, Frist (Test 30 Tage)</td></tr>
-<tr><td>Sprecherzuordnung</td><td>„Sprecher 1“; Namen nur, wenn ein Mensch sie einträgt</td><td>Datenbank</td></tr>
-<tr><td>Stimmmerkmale</td><td>Zahlenvektoren zur Unterscheidung der Stimmen</td><td><b>nicht gespeichert</b>, nur während der Verarbeitung im Arbeitsspeicher</td></tr>
+<tr><td>Sprecherzuordnung</td><td>„Sprecher 1“; Namen nur, wenn ein Mensch sie einträgt oder aus der Teilnehmendenliste auswählt</td><td>Datenbank</td></tr>
+<tr><td>Teilnehmende (optional)</td><td>Anrede und Nachname („Frau Müller“) oder Funktion – keine Vornamen, keine weiteren Angaben</td><td>Datenbank, wird mit der Aufnahme gelöscht</td></tr>
+<tr><td>Tagesordnung (optional)</td><td>Titel der Tagesordnungspunkte</td><td>Datenbank, wird mit der Aufnahme gelöscht</td></tr>
+<tr><td>Stimmmerkmale</td><td>Zahlenvektoren zur Unterscheidung der Stimmen</td><td><b>nicht gespeichert</b>, nur während der Verarbeitung im Arbeitsspeicher. Es gibt bewusst <b>keine Stimmprofile</b> und keine automatische Erkennung, wer spricht (das wären biometrische Daten nach Art. 9 DSGVO) – Namen ordnet immer ein Mensch zu.</td></tr>
 <tr><td>Metadaten</td><td>Titel, Datum/Uhrzeit, Dauer</td><td>Datenbank</td></tr>
 <tr><td>Technische Protokolle</td><td>IP-Adresse und Aufruf in den Server-Logs</td><td>Container-Logs (Größe begrenzt, werden überschrieben)</td></tr>
 </tbody></table></div>
@@ -98,6 +100,7 @@
 <li>Muss das Verzeichnis von Verarbeitungstätigkeiten je Organisationseinheit oder einmal zentral geführt werden?</li>
 <li>Sind die Sicherungskopien (14 Tage, gleicher Server) so in Ordnung, oder sollen sie verschlüsselt an einen zweiten Ort?</li>
 <li>Wie sind Zugriffsrechte im Regelbetrieb zu gestalten (nur eigene Aufnahmen, Teilen mit Teilnehmenden, Vertretung)?</li>
+<li>Ist die optionale Teilnehmendenliste (Anrede und Nachname, Löschung mit der Aufnahme) so in Ordnung? Soll sie zusätzlich im Word-Export erscheinen (derzeit ja, wie in einem üblichen Protokoll)?</li>
 </ol>
 
 <h2>Offene Punkte bis zum Regelbetrieb</h2>

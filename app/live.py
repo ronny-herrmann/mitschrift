@@ -33,7 +33,7 @@ Sender = Callable[[dict], Awaitable[None]]
 class LiveSession:
     def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, send: Sender,
                  on_saved: Callable[[str, bool], None] | None = None,
-                 llm_factory: Callable[[], object | None] | None = None):
+                 llm_factory: Callable[[], object | None] | None = None, glossar_entries: list[dict] | None = None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
@@ -58,6 +58,10 @@ class LiveSession:
         self._partial_busy = False
         self._last_partial = 0.0
         self._clean_tasks: set[asyncio.Task] = set()
+        # Glossar dieser Aufnahme (alle Ämter oder ein bestimmtes Amt)
+        from .glossar import compile_glossar
+        self.glossar_entries = glossar_entries if glossar_entries is not None else transcriber.glossar_entries()
+        self._rules = compile_glossar(self.glossar_entries)
 
     # --- Lebenszyklus ---------------------------------------------------------
     async def start(self, title: str) -> str:
@@ -215,7 +219,7 @@ class LiveSession:
             if not utt.text.strip():
                 await self.send({"type": "segment_empty"})
                 continue
-            segment = self.transcriber.utterance_to_segment(self._idx, seg, utt)
+            segment = self.transcriber.utterance_to_segment(self._idx, seg, utt, self._rules)
             self._idx += 1
             self._segments.append(segment)
             self.store.append_segment(self.transcript.id, segment)
@@ -233,7 +237,7 @@ class LiveSession:
         ctx = [s for s in self._segments if s.idx < segment.idx][-3:]
         try:
             cleaned = await loop.run_in_executor(
-                None, bereinigung.clean_segments, self.llm, [segment], self.transcriber.glossar_entries(), ctx)
+                None, bereinigung.clean_segments, self.llm, [segment], self.glossar_entries, ctx)
         except Exception as e:
             log.warning("Live-Bereinigung fehlgeschlagen: %s", e)
             return

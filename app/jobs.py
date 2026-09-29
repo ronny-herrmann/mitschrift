@@ -21,11 +21,12 @@ log = logging.getLogger(__name__)
 
 
 class JobQueue:
-    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, llm_factory=None):
+    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, llm_factory=None, glossar_for=None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
         self.llm_factory = llm_factory
+        self.glossar_for = glossar_for or (lambda tid: transcriber.glossar_entries())
         self._diarizer = None
         self._diarizer_failed = False
         self._q: queue.Queue[str] = queue.Queue()
@@ -84,7 +85,8 @@ class JobQueue:
         def prog(done: int, total: int) -> None:
             self._progress[tid] = (done, total)
 
-        segments, secs = self.transcriber.transcribe_audio(audio, prog)
+        entries = self.glossar_for(tid)
+        segments, secs = self.transcriber.transcribe_audio(audio, prog, entries=entries)
 
         # Sprechererkennung
         if self.settings.diarization and segments:
@@ -115,7 +117,7 @@ class JobQueue:
         if llm is not None and segments:
             self._progress[tid] = (-2, 0)  # Anzeige: „KI bereinigt“
             try:
-                cleaned = bereinigung.clean_segments(llm, segments, self.transcriber.glossar_entries(),
+                cleaned = bereinigung.clean_segments(llm, segments, entries,
                                                      korrekturen=self.store.get_setting(f"korrekturen:{tid}", []))
                 changes, _, _ = bereinigung.apply_cleaned(segments, cleaned)
                 by_idx = {c["idx"]: c for c in changes}

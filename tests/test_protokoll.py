@@ -188,3 +188,17 @@ def test_edited_segments_are_not_sent_and_corrections_win():
     out = bereinigung.clean_segments(LLM(), t.segments, [], korrekturen=kor)
     assert "[S1]" not in seen[0] and 1 not in out
     assert out[3].endswith("Kämmerei bis Freitag."), "Korrektur der Nutzer setzt sich gegen die KI durch"
+
+
+def test_agenda_structures_result_protocol_and_tasks():
+    t = make_transcript()
+    antwort = ("THEMA: Haushalt [S1]\nAUSSAGE (TOP 1): Der erste Tagesordnungspunkt ist der Haushalt 2027. [S1]\n"
+               "BESCHLUSS (TOP 1): Der Haushaltsentwurf wird an den Gemeinderat weitergeleitet. [S2]\n"
+               "AUFGABE (TOP 2): Frau Müller | Nachfrage bei der Kämmerei | Freitag [S3]")
+    c = create_protokoll(t, "ergebnis", FakeLLM(antwort=antwort), tagesordnung=["Haushalt 2027", "Kämmerei"])
+    md = c["protokoll_md"]
+    assert "## TOP 1: Haushalt 2027" in md and "## TOP 2: Kämmerei" in md
+    assert "Frau Müller: Nachfrage bei der Kämmerei – bis Freitag" in md
+    auf = [it for a in c["extrakt"]["abschnitte"] for it in a["items"] if it["typ"] == "AUFGABE"]
+    assert auf[0]["wer"] == "Frau Müller" and auf[0]["bis"] == "Freitag"
+    assert c["pruefung"]["unbelegt"] == 0

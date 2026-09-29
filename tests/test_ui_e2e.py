@@ -134,9 +134,21 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.wait_for_selector(".seg")
     assert page.inner_text(".seg .txt >> nth=0").strip() == "Korrigiert per UI"
 
-    page.once("dialog", lambda d: d.accept("Frau Müller"))
+    # Teilnehmende eintragen, dann Sprecher per Auswahl zuordnen
+    page.click("#d-meta")
+    page.fill("#d-tn", "Frau Müller\nHerr Maier")
+    page.fill("#d-to", "Begrüßung\nHaushalt")
+    page.click("#m-ok")
+    page.wait_for_selector("text=2 Teilnehmende")
     page.locator(".bname").first.click()
-    page.wait_for_selector("text=Frau Müller")
+    page.click(".menu-list [data-act='n:Frau Müller']")
+    page.wait_for_selector(".bname:has-text('Frau Müller')")
+
+    # Suche im Transkript
+    page.fill("#tx-q", "Korrigiert")
+    page.wait_for_selector("#tx mark")
+    assert page.inner_text("#tx-hits") == "1/1"
+    page.fill("#tx-q", "")
 
     assert page.locator(".seg .mk.edit").count() == 1, "eigene Korrektur wird markiert"
 
@@ -175,6 +187,21 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.wait_for_selector(".item")
     assert page.locator(".item").count() >= 2
     assert not [e for e in page.errors if "favicon" not in e], page.errors
+
+
+def test_glossar_page(page, server):
+    page.goto(server + "/#/glossar")
+    page.wait_for_selector("#gl")
+    page.fill("#gl tr:first-child td:nth-child(1) input", "CHS")
+    page.fill("#gl tr:first-child td:nth-child(2) input", "Excel")
+    page.fill("#gl tr:first-child td:nth-child(3) input", "20.1")
+    page.click("#gl-save")
+    page.wait_for_selector("#gl-filter option[value='20.1']", state="attached")
+    _shot(page, "glossar")
+    page.goto(server + "/#/aufnahme")
+    page.wait_for_selector("#r-glossar option[value='20.1']", state="attached")
+    page.click("details.sitzung summary")
+    _shot(page, "aufnahme_sitzung")
 
 
 def test_info_pages(page, server):

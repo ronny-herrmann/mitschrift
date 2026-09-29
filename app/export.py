@@ -95,7 +95,8 @@ def _md_inline(p, text: str) -> None:
 
 
 def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str = "Zusammenfassung",
-            fliesstext: bool = False, nur_protokoll: bool = False, pruefstatus: str = "") -> bytes:
+            fliesstext: bool = False, nur_protokoll: bool = False, pruefstatus: str = "",
+            teilnehmende: list[str] | None = None) -> bytes:
     from docx import Document
     from docx.shared import Pt, RGBColor
 
@@ -109,6 +110,10 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
     meta = doc.add_paragraph(f"Aufgenommen: {created}   ·   Dauer: {fmt_time(t.duration)}   ·   Spracherkennung: {t.model}")
     meta.runs[0].font.size = Pt(9)
     meta.runs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    if teilnehmende:
+        tp = doc.add_paragraph()
+        tp.add_run("Teilnehmende: ").bold = True
+        tp.add_run(", ".join(teilnehmende))
 
     if fliesstext:
         # Absätze je Sprecherwechsel, ohne Zeitmarken

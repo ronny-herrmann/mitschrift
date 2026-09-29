@@ -9,7 +9,7 @@
   <link rel="icon" href="/static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/static/icon-192.png">
   <link rel="preload" href="/static/fonts/jakarta-var-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="/static/styles.css?v=20260929g">
+  <link rel="stylesheet" href="/static/styles.css?v=20260929i">
 </head>
 <body>
   <div class="shell">
@@ -25,9 +25,10 @@
       <div class="side-list" id="side-list"></div>
       <div class="side-foot">
         <a class="side-link" href="#/glossar" data-nav="glossar"><svg viewBox="0 0 24 24"><path d="M4 5h11a3 3 0 0 1 3 3v11H7a3 3 0 0 1-3-3z"/><path d="M8 9h6M8 13h4"/></svg>Glossar</a>
-        <a class="side-link" href="#/faq" data-nav="faq"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.3a2.5 2.5 0 0 1 4.8.9c0 1.7-2.4 2.2-2.4 3.8"/><path d="M12 17.2h.01"/></svg>Häufige Fragen</a>
-        <a class="side-link" href="#/infos" data-nav="infos"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5h.01"/></svg>Infos <span class="side-badge">intern</span></a>
         <div class="sys" id="sys"><span class="sys-dot"></span><span id="sys-txt">Verbinde …</span></div>
+        <div class="menu user-menu">
+          <button class="user-btn" id="user-btn" aria-haspopup="menu"><span class="user-av" id="user-av">?</span><span class="user-name" id="user-name">Testzugang</span><span class="chev">▴</span></button>
+        </div>
       </div>
     </aside>
 
@@ -48,6 +49,6 @@
 
   <div class="modal hidden" id="modal" role="dialog" aria-modal="true"><div class="modal-card" id="modal-card"></div></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="/static/app.js?v=20260929g"></script>
+  <script src="/static/app.js?v=20260929i"></script>
 </body>
 </html>

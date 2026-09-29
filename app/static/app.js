@@ -58,8 +58,9 @@
       const sys = $('#sys'), txt = $('#sys-txt'), banner = $('#banner');
       const live = (health.models && health.models.live) || health.model || {};
       if (health.ready) {
-        sys.className = 'sys ok';
-        txt.textContent = `${live.model || live.backend || 'bereit'}${health.llm_configured ? ' · KI: ' + health.llm_model : ''}`;
+        const kiAus = health.llm_configured && health.llm_status && health.llm_status !== 'bereit';
+        sys.className = 'sys ' + (kiAus ? 'loading' : 'ok');
+        txt.textContent = `Spracherkennung bereit${health.llm_configured ? ' · KI ' + (health.llm_status || 'bereit') : ''}`;
         sys.title = JSON.stringify(health.models || {}, null, 1);
         banner.classList.add('hidden');
       } else if (health.load_status === 'fehler') {
@@ -70,17 +71,38 @@
         banner.innerHTML = '<span class="spin"></span> Das Sprachmodell wird geladen – beim ersten Start bis zu 1–2 Minuten. Die Seite ist gleich einsatzbereit.';
         banner.classList.remove('hidden');
       }
-      if (health.auth && !$('#logout')) {
-        const a = document.createElement('a'); a.id = 'logout'; a.href = '#'; a.textContent = 'Abmelden';
-        a.addEventListener('click', async (e) => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; });
-        $('#sys').appendChild(a);
-      }
+
       document.dispatchEvent(new CustomEvent('health'));
     } catch {
       $('#sys').className = 'sys err'; $('#sys-txt').textContent = 'Server nicht erreichbar';
     }
     setTimeout(loadHealth, health.ready ? 30000 : 2000);
   }
+
+  // ================================================================ Benutzer-Menü
+  const userName = () => { try { return localStorage.getItem('protokollant-name') || ''; } catch { return ''; } };
+  function drawUser() {
+    const n = userName();
+    $('#user-av').textContent = n ? n.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() : '?';
+    $('#user-name').textContent = n || 'Testzugang';
+  }
+  $('#user-btn').addEventListener('click', (e) => {
+    $$('.menu-list').forEach((m) => m.remove());
+    const m = document.createElement('div'); m.className = 'menu-list up';
+    m.innerHTML = `<a href="#/faq">Häufige Fragen</a><a href="#/infos">Infos <span class="side-badge">intern</span></a><hr>
+      <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="logout">Abmelden</button>' : ''}`;
+    e.currentTarget.parentElement.appendChild(m);
+    setTimeout(() => document.addEventListener('click', function close(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
+    m.addEventListener('click', async (ev) => {
+      const b = ev.target.closest('[data-act]'); m.remove(); if (!b) return;
+      if (b.dataset.act === 'name') {
+        const n = prompt('Ihr Name (nur für die Anzeige hier, wird nicht gespeichert):', userName());
+        if (n !== null) { try { localStorage.setItem('protokollant-name', n.trim()); } catch { } drawUser(); }
+      }
+      if (b.dataset.act === 'logout') { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; }
+    });
+  });
+  drawUser();
 
   // ================================================================ Seitenleiste
   let sideItems = [];
@@ -130,12 +152,14 @@
   async function renderAufnahme() {
     view.innerHTML = `
       <section class="rec-setup" id="setup">
-        <div class="page-head"><h1>Neue Aufnahme</h1><p>Besprechung live mitschreiben – der Text erscheint, während gesprochen wird.</p></div>
+        <div class="page-head"><h1>Neue Aufnahme</h1></div>
         <div class="card rec-card">
-          <div class="rec-fields">
-            <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung" autocomplete="off"></label>
+          <div class="rec-fields three">
+            <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung Amt 10.5" autocomplete="off"></label>
             <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
+            <label>Glossar<select id="r-glossar"><option value="alle">Alle Ämter</option></select></label>
           </div>
+          ${sitzungsFelder('r')}
           <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
           <div class="rec-start">
             <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
@@ -176,6 +200,7 @@
       startBtn.disabled = !consent.checked || !health.ready;
       hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Bereit – zum Starten auf den roten Knopf tippen.' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
     };
+    fillGlossarSelect($('#r-glossar')); bindSitzung('r');
     consent.addEventListener('change', updateStart);
     document.addEventListener('health', updateStart);
     updateStart();
@@ -211,7 +236,11 @@
     let partialEl = null;
     function onMessage(m) {
       const was = nearBottom();
-      if (m.type === 'ready') { tid = m.transcript_id; $('#r-info').textContent = m.ai_clean ? '✨ KI-Bereinigung live aktiv' : ''; }
+      if (m.type === 'ready') {
+        tid = m.transcript_id; $('#r-info').textContent = m.ai_clean ? 'KI-Bereinigung live aktiv' : '';
+        const sd = sitzungsDaten('r');
+        if (sd.tagesordnung.length) api(`/api/transcripts/${tid}/meta`, { method: 'PUT', body: JSON.stringify({ tagesordnung: sd.tagesordnung }) }).catch(() => { });
+      }
       else if (m.type === 'partial') {
         if (paused) return;
         $('.live-empty', text)?.remove();
@@ -251,7 +280,8 @@
       node = new AudioWorkletNode(ctx, 'pcm16-processor'); src.connect(node);
       const title = $('#r-title').value.trim() || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}`);
+      const sd = sitzungsDaten('r');
+      ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}&glossar=${encodeURIComponent($('#r-glossar').value)}&teilnehmende=${encodeURIComponent(sd.teilnehmende.join(','))}`);
       ws.binaryType = 'arraybuffer';
       const pending = [];
       ws.onopen = () => { pending.forEach((b) => ws.send(b)); pending.length = 0; };
@@ -335,6 +365,43 @@
     return () => { document.removeEventListener('visibilitychange', onVis); document.removeEventListener('health', updateStart); if (recordingActive) stop(); cancelAnimationFrame(raf); };
   }
 
+  // ================================================================ Sitzungsdaten (Teilnehmende, Tagesordnung)
+  function sitzungsFelder(p, m = {}) {
+    const open = (m.teilnehmende && m.teilnehmende.length) || (m.tagesordnung && m.tagesordnung.length);
+    return `<details class="sitzung" ${open ? 'open' : ''}><summary>Teilnehmende und Tagesordnung <span class="muted">(optional – verbessert Sprechernamen und Protokoll)</span></summary>
+      <div class="sitzung-grid">
+        <label>Teilnehmende<textarea id="${p}-tn" rows="4" placeholder="Frau Müller&#10;Herr Maier">${esc((m.teilnehmende || []).join('\n'))}</textarea><span class="hint">Anrede und Nachname, eine Person je Zeile. Keine Vornamen nötig.</span></label>
+        <label>Tagesordnung<textarea id="${p}-to" rows="4" placeholder="Begrüßung&#10;Haushalt 2027&#10;Verschiedenes">${esc((m.tagesordnung || []).join('\n'))}</textarea>
+          <span class="hint">Ein Punkt je Zeile – oder <a href="#" id="${p}-to-file">aus Datei übernehmen</a> (Word, PDF, Text).<input type="file" id="${p}-to-input" accept=".docx,.pdf,.txt,.md" hidden></span></label>
+      </div></details>`;
+  }
+  function sitzungsDaten(p) {
+    const lines = (id) => ($('#' + id)?.value || '').split(/\n/).map((x) => x.trim()).filter(Boolean);
+    return { teilnehmende: lines(`${p}-tn`).flatMap((x) => x.split(/[,;]/)).map((x) => x.trim()).filter(Boolean), tagesordnung: lines(`${p}-to`) };
+  }
+  function bindSitzung(p) {
+    const link = $(`#${p}-to-file`), input = $(`#${p}-to-input`);
+    if (!link) return;
+    link.addEventListener('click', (e) => { e.preventDefault(); input.click(); });
+    input.addEventListener('change', async () => {
+      const f = input.files[0]; if (!f) return;
+      const fd = new FormData(); fd.append('file', f);
+      try {
+        const r = await fetch('/api/tagesordnung/lesen', { method: 'POST', body: fd });
+        const j = await r.json(); if (!r.ok) throw new Error(j.detail || r.statusText);
+        $(`#${p}-to`).value = j.join('\n'); toast(`${j.length} Tagesordnungspunkte übernommen – bitte kurz prüfen`);
+      } catch (e) { toast(e.message, true); }
+      input.value = '';
+    });
+  }
+  async function fillGlossarSelect(sel, cur = 'alle') {
+    try {
+      const aemter = await api('/api/glossar/aemter');
+      sel.innerHTML = '<option value="alle">Alle Ämter</option>' + aemter.map((a) => `<option value="${esc(a)}">Amt ${esc(a)} + allgemein</option>`).join('');
+      sel.value = cur;
+    } catch { }
+  }
+
   // ================================================================ Hochladen
   async function renderHochladen() {
     view.innerHTML = `
@@ -345,9 +412,13 @@
         <div><strong>Datei hierher ziehen</strong> oder klicken</div>
         <div class="muted small" style="margin-top:.3rem">Mehrere Dateien möglich · werden nacheinander verarbeitet</div>
       </div>
-      <div style="margin-top:1rem;max-width:480px"><input id="up-title" type="text" placeholder="Titel (optional, sonst Dateiname)" style="width:100%"></div>
+      <div class="card up-card">
+        <div class="rec-fields"><label>Titel<input id="up-title" type="text" placeholder="optional – sonst Dateiname"></label><label>Glossar<select id="up-glossar"><option value="alle">Alle Ämter</option></select></label></div>
+        ${sitzungsFelder('u')}
+      </div>
       <div class="jobs" id="jobs"></div>`;
     const drop = $('#drop'), input = $('#file'), jobs = $('#jobs');
+    fillGlossarSelect($('#up-glossar')); bindSitzung('u');
     drop.addEventListener('click', () => input.click());
     drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
     ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
@@ -358,6 +429,8 @@
     async function upload(files) {
       for (const f of files) {
         const fd = new FormData(); fd.append('file', f); fd.append('title', $('#up-title').value.trim());
+        const sd = sitzungsDaten('u');
+        fd.append('glossar', $('#up-glossar').value); fd.append('teilnehmende', sd.teilnehmende.join('\n')); fd.append('tagesordnung', sd.tagesordnung.join('\n'));
         const row = document.createElement('div'); row.className = 'job';
         row.innerHTML = `<span class="name">${esc(f.name)}</span><div class="bar"><i></i></div><span class="chip">lädt hoch …</span>`;
         jobs.prepend(row);
@@ -405,18 +478,53 @@
   // ================================================================ Glossar
   async function renderGlossar() {
     view.innerHTML = `
-      <div class="page-head"><h1>Glossar</h1><p>Begriffe, Namen und Abkürzungen eurer Verwaltung. Sie werden nach der Erkennung automatisch korrigiert und der KI-Bereinigung als Pflicht-Schreibweise mitgegeben – z. B. „CHS“ → „Excel“, „Heilbrunn“ → „Heilbronn“.</p></div>
-      <div class="card"><table class="glossar"><thead><tr><th>Wird erkannt als</th><th>Richtig</th><th></th></tr></thead><tbody id="gl"></tbody></table>
-      <div style="display:flex;gap:.5rem;margin-top:.8rem"><button class="btn" id="gl-add">+ Eintrag</button><button class="btn primary" id="gl-save">Speichern</button></div></div>`;
-    const body = $('#gl');
-    const row = (e = {}) => `<tr><td><input type="text" value="${esc(e.von)}" placeholder="z. B. CHS"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
-    body.innerHTML = (await api('/api/glossar')).map(row).join('') || row();
+      <div class="page-head"><h1>Glossar</h1><p>Begriffe, Namen und Abkürzungen der Verwaltung. Sie werden nach der Erkennung automatisch korrigiert und der KI als Pflicht-Schreibweise mitgegeben – z. B. „CHS“ → „Excel“. Einträge ohne Amt gelten für alle.</p></div>
+      <div class="card">
+        <div class="gl-tools">
+          <label class="field-label inline">Anzeigen<select id="gl-filter"><option value="">Alle Einträge</option></select></label>
+          <span class="sp"></span>
+          <button class="btn" id="gl-import">Aus Excel übernehmen</button><input type="file" id="gl-file" accept=".xlsx,.csv" hidden>
+        </div>
+        <table class="glossar"><thead><tr><th>Wird erkannt als</th><th>Richtig</th><th>Amt</th><th></th></tr></thead><tbody id="gl"></tbody></table>
+        <div class="gl-actions"><button class="btn" id="gl-add">+ Eintrag</button><button class="btn primary" id="gl-save">Speichern</button>
+          <span class="muted small">Excel: Spalten „Erkannt als“, „Richtig“ und optional „Amt“ – oder einfach die ersten beiden Spalten.</span></div>
+      </div>`;
+    const body = $('#gl'), filter = $('#gl-filter');
+    let all = await api('/api/glossar');
+    const row = (e = {}) => `<tr data-amt="${esc(e.amt || '')}"><td><input type="text" value="${esc(e.von)}" placeholder="z. B. CHS"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><input type="text" class="amt" value="${esc(e.amt || '')}" placeholder="alle"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
+    const collect = () => $$('tr', body).map((tr) => { const [a, b, c] = $$('input', tr); return { von: a.value, zu: b.value, amt: c.value }; });
+    const fillFilter = () => {
+      const aemter = [...new Set(all.map((e) => e.amt).filter(Boolean))].sort();
+      const cur = filter.value;
+      filter.innerHTML = '<option value="">Alle Einträge</option>' + aemter.map((a) => `<option value="${esc(a)}">Amt ${esc(a)} + allgemein</option>`).join('');
+      filter.value = aemter.includes(cur) ? cur : '';
+    };
+    const drawRows = () => {
+      const f = filter.value;
+      body.innerHTML = all.map((e) => row(e)).join('') || row({ amt: f });
+      $$('tr', body).forEach((tr) => { tr.hidden = !!f && !['', f].includes(tr.dataset.amt); });
+    };
+    fillFilter(); drawRows();
+    filter.addEventListener('change', () => { all = collect(); drawRows(); });
     body.addEventListener('click', (e) => { if (e.target.closest('[data-del]')) e.target.closest('tr').remove(); });
-    $('#gl-add').addEventListener('click', () => body.insertAdjacentHTML('beforeend', row()));
+    $('#gl-add').addEventListener('click', () => body.insertAdjacentHTML('beforeend', row({ amt: filter.value })));
     $('#gl-save').addEventListener('click', async () => {
-      const eintraege = $$('tr', body).map((tr) => { const [a, b] = $$('input', tr); return { von: a.value, zu: b.value }; });
-      const saved = await api('/api/glossar', { method: 'PUT', body: JSON.stringify({ eintraege }) });
-      toast(`Glossar gespeichert (${saved.length} Einträge)`);
+      all = await api('/api/glossar', { method: 'PUT', body: JSON.stringify({ eintraege: collect() }) });
+      fillFilter(); drawRows(); toast(`Glossar gespeichert (${all.length} Einträge)`);
+    });
+    $('#gl-import').addEventListener('click', () => $('#gl-file').click());
+    $('#gl-file').addEventListener('change', async (e) => {
+      const f = e.target.files[0]; if (!f) return;
+      const amt = prompt('Für welches Amt gelten die Einträge? (leer lassen = für alle; Angaben in der Datei haben Vorrang)', filter.value || '');
+      if (amt === null) { e.target.value = ''; return; }
+      const fd = new FormData(); fd.append('file', f); fd.append('amt', amt.trim());
+      try {
+        const r = await fetch('/api/glossar/import', { method: 'POST', body: fd }); const j = await r.json();
+        if (!r.ok) throw new Error(j.detail || r.statusText);
+        all = [...collect(), ...j]; fillFilter(); drawRows();
+        toast(`${j.length} Einträge übernommen – zum Übernehmen „Speichern“ klicken`);
+      } catch (err) { toast(err.message, true); }
+      e.target.value = '';
     });
   }
 
@@ -476,6 +584,7 @@
     let t = await api(`/api/transcripts/${id}`);
     let showClean = true, mTab = 'tx', editMd = false, task = null, taskPoll = null, tick = null;
     let curStyle = t.protokoll ? t.protokoll.style : null;
+    let q = '', hit = 0, aufgaben = null;
     const prot = () => (curStyle && t.protokolle && t.protokolle[curStyle]) || null;
 
     const speakerColor = () => { const m = new Map(); t.segments.forEach((s) => { if (s.speaker && !m.has(s.speaker)) m.set(s.speaker, COLORS[m.size % COLORS.length]); }); return m; };
@@ -518,7 +627,8 @@
           ${speakers.size ? `<span class="chip">${speakers.size} Sprecher</span>` : ''}
           <span class="chip blue" title="Spracherkennung">Modell: ${esc(t.model || '–')}</span>
           ${rtf ? `<span class="chip ok" title="So lange hat der Server für die Spracherkennung gebraucht">Rechenzeit ${fmtDur(t.processing_seconds)} · ${rtf.toFixed(0)}× schneller als die Aufnahme</span>` : ''}
-          ${hasClean() ? '<span class="chip ai">✨ KI-bereinigt</span>' : ''}
+          ${hasClean() ? '<span class="chip ai">KI-bereinigt</span>' : ''}
+          <button class="chip chip-btn" id="d-meta" title="Teilnehmende, Tagesordnung und Glossar dieser Sitzung">${metaLabel()}</button>
           ${t.status === 'error' ? `<span class="chip danger">${esc(t.error)}</span>` : (t.error ? `<span class="chip warn" title="${esc(t.error)}">Hinweis</span>` : '')}
         </div>
         ${working() ? `<div class="progress-banner"><span class="spin"></span><span>${t.status === 'refining' ? 'Wird verfeinert – ' : ''}${progressText(t.progress)}</span><div class="bar"><i style="width:${progressPct(t.progress)}%"></i></div></div>` : ''}
@@ -532,6 +642,7 @@
         <div class="d-grid" data-tab="${mTab}">
           <section class="tx-pane">
             <div class="pane-head"><h2>Transkript</h2><span class="sp"></span>
+              <div class="tx-search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input id="tx-q" type="search" placeholder="Im Transkript suchen" value="${esc(q)}"><span class="tx-hits" id="tx-hits"></span></div>
               ${hasClean() ? `<div class="seg-toggle"><button data-view="clean" class="${showClean ? 'on' : ''}">✨ Bereinigt</button><button data-view="orig" class="${showClean ? '' : 'on'}">Original</button></div>` : ''}
             </div>
             <div class="tx ${t.status === 'refining' ? 'provisional' : ''}" id="tx">${drawBlocks()}</div>
@@ -542,6 +653,16 @@
       bind();
     }
 
+    function metaLabel() {
+      const m = t.meta || {}; const tn = (m.teilnehmende || []).length, to = (m.tagesordnung || []).length;
+      const parts = [tn ? `${tn} Teilnehmende` : '', to ? `Tagesordnung: ${to} Punkte` : '', m.glossar && m.glossar !== 'alle' ? `Glossar Amt ${m.glossar}` : ''].filter(Boolean);
+      return parts.length ? '✎ ' + parts.join(' · ') : '+ Teilnehmende und Tagesordnung';
+    }
+    const hl = (html) => {
+      if (!q) return html;
+      const rx = new RegExp(esc(q).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+      return html.replace(rx, (m) => `<mark>${m}</mark>`);
+    };
     function drawBlocks() {
       if (!t.segments.length) return `<div class="empty">${t.status === 'error' ? 'Transkription fehlgeschlagen.' : 'Noch kein Text – die Verarbeitung läuft.'}</div>`;
       const colors = speakerColor();
@@ -561,7 +682,7 @@
             const mk = s.edited ? '<span class="mk edit" title="Von Ihnen korrigiert – die KI ändert diesen Satz nicht mehr">✎</span>'
               : useClean && s.clean !== s.text ? `<span class="mk ai" title="Original: ${esc(s.text)}">✨</span>`
               : (s.clean_note ? `<span class="mk warn" title="KI-Bereinigung verworfen: ${esc(s.clean_note)}">⚠</span>` : '');
-            return `<span class="seg" data-idx="${s.idx}" data-start="${s.start}" data-end="${s.end}"><span class="txt" contenteditable="true" spellcheck="true" data-field="${useClean ? 'clean' : 'text'}">${esc(useClean ? s.clean : s.text)}</span>${mk}</span>`;
+            return `<span class="seg" data-idx="${s.idx}" data-start="${s.start}" data-end="${s.end}"><span class="txt" contenteditable="true" spellcheck="true" data-field="${useClean ? 'clean' : 'text'}">${hl(esc(useClean ? s.clean : s.text))}</span>${mk}</span>`;
           }).join('')}</div>
         </div>`;
       }).join('');
@@ -609,6 +730,24 @@
       }).join('');
     }
 
+    function drawAufgaben() {
+      if (!aufgaben || !aufgaben.length) return '';
+      return `<div class="tasks"><div class="tasks-head"><h4>Aufgaben (${aufgaben.length})</h4><button class="btn ghost sm" id="a-copy" title="Als Tabelle kopieren – zum Einfügen in Teams, Outlook oder Excel">Kopieren</button></div>
+        <table><thead><tr><th>Wer</th><th>Was</th><th>Bis wann</th></tr></thead><tbody>${aufgaben.map((a) => `<tr data-jump="${a.refs[0] ?? ''}"><td>${esc(a.wer || '–')}</td><td>${esc(a.was)}</td><td>${esc(a.bis || '–')}</td></tr>`).join('')}</tbody></table></div>`;
+    }
+    async function loadAufgaben() {
+      if (!prot()) return;
+      try { aufgaben = await api(`/api/transcripts/${t.id}/aufgaben`); } catch { aufgaben = []; }
+      const box = $('#aufgaben'); if (box) { box.innerHTML = drawAufgaben(); bindAufgaben(); }
+    }
+    function bindAufgaben() {
+      $('#a-copy')?.addEventListener('click', async () => {
+        const rows = aufgaben.map((a) => [a.wer || '–', a.was, a.bis || '–'].join('\t'));
+        if (await copy(['Wer\tWas\tBis wann', ...rows].join('\n'))) toast('Aufgaben kopiert – in Teams, Outlook oder Excel einfügen');
+      });
+      $$('.tasks tr[data-jump]').forEach((tr) => { if (tr.dataset.jump !== '') tr.addEventListener('click', () => jump(+tr.dataset.jump)); });
+    }
+
     function qualityLine(p) {
       const pr = p.content.pruefung || { zeilen_inhalt: 0, unbelegt: 0, ungueltige_belege: 0, schwach_belegt: 0 };
       const n = pr.zeilen_inhalt || 0, bad = (pr.unbelegt || 0) + (pr.ungueltige_belege || 0) + (pr.schwach_belegt || 0);
@@ -638,6 +777,7 @@
                  <button class="btn sm ${geprueft ? 'done' : ''}" id="p-confirm" title="${geprueft ? 'Markierung aufheben' : 'Bestätigen, dass eine Person das Protokoll inhaltlich geprüft hat. Steht dann auch im Word-Export.'}">${geprueft ? ICON.check + 'Geprüft' + (am ? ' am ' + am : '') : 'Als geprüft markieren'}</button>
                  <button class="btn ghost sm" id="p-copy">Kopieren</button>`}
           </div>
+          <div id="aufgaben">${drawAufgaben()}</div>
         </div>`;
     }
 
@@ -678,36 +818,14 @@
       }));
       $$('[data-mtab]').forEach((b) => b.addEventListener('click', () => { mTab = b.dataset.mtab; draw(); }));
       $$('[data-view]').forEach((b) => b.addEventListener('click', () => { showClean = b.dataset.view === 'clean'; draw(); }));
-      $$('[data-seek]').forEach((el) => el.addEventListener('click', () => seek(+el.dataset.seek)));
-      $$('.seg .txt').forEach((el) => {
-        el.dataset.orig = el.textContent;
-        el.addEventListener('paste', (e) => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text/plain')); });
-        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
-        el.addEventListener('dblclick', () => seek(+el.parentElement.dataset.start));
-        el.addEventListener('blur', async () => {
-          const val = el.textContent.trim(); if (val === el.dataset.orig) return;
-          const idx = +el.parentElement.dataset.idx, field = el.dataset.field;
-          const r = await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ [field]: val }) });
-          const s = t.segments.find((x) => x.idx === idx);
-          if (field === 'text') { s.text = val; if (s.clean) s.clean = val; } else s.clean = val;
-          s.edited = true; s.clean_note = ''; el.dataset.orig = val;
-          if (!el.parentElement.querySelector('.mk.edit')) { el.parentElement.querySelector('.mk')?.remove(); el.insertAdjacentHTML('afterend', '<span class="mk edit" title="Von Ihnen korrigiert – die KI ändert diesen Satz nicht mehr">✎</span>'); }
-          if (r.weitere_stellen && r.weitere_stellen.length) {
-            const k = r.korrekturen[0];
-            toastAction(`„${k.von}“ steht noch an ${r.weitere_stellen.length} weiteren Stelle${r.weitere_stellen.length > 1 ? 'n' : ''}.`, `Überall durch „${k.zu}“ ersetzen`, async () => {
-              const x = await api(`/api/transcripts/${t.id}/ersetzen`, { method: 'POST', body: JSON.stringify({ paare: r.korrekturen }) });
-              await reload(); toast(`${x.ersetzt} Stellen ersetzt`);
-            });
-          } else toast('Gespeichert – Ihre Korrektur hat Vorrang vor der KI');
-        });
-      });
-      $$('.bname').forEach((el) => el.addEventListener('click', async () => {
-        const old = el.dataset.spk, neu = prompt(old ? `Neuer Name für „${old}“ (gilt für alle Stellen):` : 'Sprechername:', old && !old.startsWith('Sprecher ') ? old : '');
-        if (neu === null || !neu.trim()) return;
-        if (old) { await api(`/api/transcripts/${t.id}/speakers/rename`, { method: 'POST', body: JSON.stringify({ von: old, zu: neu.trim() }) }); t.segments.forEach((s) => { if (s.speaker === old) s.speaker = neu.trim(); }); }
-        else { const idx = +el.closest('.block').querySelector('.seg').dataset.idx; await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ speaker: neu.trim() }) }); t.segments.find((s) => s.idx === idx).speaker = neu.trim(); }
-        draw();
-      }));
+      bindSegs();
+      const qi = $('#tx-q');
+      const redrawTx = () => { $('#tx').innerHTML = drawBlocks(); bindSegs(); showHit(!!q); };
+      qi.addEventListener('input', () => { q = qi.value.trim(); hit = 0; redrawTx(); });
+      qi.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); hit += e.shiftKey ? -1 : 1; showHit(); } if (e.key === 'Escape') { qi.value = ''; q = ''; redrawTx(); } });
+      showHit(false);
+      bindAufgaben();
+      $('#d-meta').addEventListener('click', editMeta);
       $$('[data-ref]').forEach((el) => el.addEventListener('click', () => jump(+el.dataset.ref)));
       const a = audio();
       if (a) a.ontimeupdate = () => {
@@ -735,6 +853,75 @@
       sizePanes();
     }
 
+    function bindSegs() {
+      $$('.seg .txt').forEach((el) => {
+        el.dataset.orig = el.textContent;
+        el.addEventListener('paste', (e) => { e.preventDefault(); document.execCommand('insertText', false, (e.clipboardData || window.clipboardData).getData('text/plain')); });
+        el.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); el.blur(); } });
+        el.addEventListener('dblclick', () => seek(+el.parentElement.dataset.start));
+        el.addEventListener('blur', async () => {
+          const val = el.textContent.trim(); if (val === el.dataset.orig) return;
+          const idx = +el.parentElement.dataset.idx, field = el.dataset.field;
+          const r = await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ [field]: val }) });
+          const s = t.segments.find((x) => x.idx === idx);
+          if (field === 'text') { s.text = val; if (s.clean) s.clean = val; } else s.clean = val;
+          s.edited = true; s.clean_note = ''; el.dataset.orig = val;
+          if (!el.parentElement.querySelector('.mk.edit')) { el.parentElement.querySelector('.mk')?.remove(); el.insertAdjacentHTML('afterend', '<span class="mk edit" title="Von Ihnen korrigiert – die KI ändert diesen Satz nicht mehr">✎</span>'); }
+          if (r.weitere_stellen && r.weitere_stellen.length) {
+            const k = r.korrekturen[0];
+            toastAction(`„${k.von}“ steht noch an ${r.weitere_stellen.length} weiteren Stelle${r.weitere_stellen.length > 1 ? 'n' : ''}.`, `Überall durch „${k.zu}“ ersetzen`, async () => {
+              const x = await api(`/api/transcripts/${t.id}/ersetzen`, { method: 'POST', body: JSON.stringify({ paare: r.korrekturen }) });
+              await reload(); toast(`${x.ersetzt} Stellen ersetzt`);
+            });
+          } else toast('Gespeichert – Ihre Korrektur hat Vorrang vor der KI');
+        });
+      });
+      $$('[data-seek]').forEach((el) => el.addEventListener('click', () => seek(+el.dataset.seek)));
+      $$('.bname').forEach((el) => el.addEventListener('click', (e) => pickSpeaker(el, e)));
+    }
+
+    function showHit(scroll = true) {
+      const marks = $$('#tx mark'); const out = $('#tx-hits'); if (!out) return;
+      out.textContent = q ? (marks.length ? `${((hit % marks.length) + marks.length) % marks.length + 1}/${marks.length}` : '0 Treffer') : '';
+      if (!marks.length) return;
+      marks.forEach((m) => m.classList.remove('cur'));
+      const m = marks[((hit % marks.length) + marks.length) % marks.length]; m.classList.add('cur');
+      if (scroll) m.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+
+    function pickSpeaker(el, ev) {
+      const namen = (t.meta && t.meta.teilnehmende) || [];
+      const old = el.dataset.spk;
+      openMenu(el, `<div class="menu-label">${old ? `„${esc(old)}“ ist …` : 'Wer spricht hier?'}</div>
+        ${namen.map((n) => `<button data-act="n:${esc(n)}">${esc(n)}</button>`).join('') || '<span class="disabled">Noch keine Teilnehmenden eingetragen</span>'}
+        <hr><button data-act="frei">Anderer Name …</button>`, (act) => {
+        if (act === 'frei') { const neu = prompt(old ? `Neuer Name für „${old}“ (gilt für alle Stellen):` : 'Sprechername:', old && !old.startsWith('Sprecher ') ? old : ''); if (neu && neu.trim()) setSpeaker(el, old, neu.trim()); }
+        else setSpeaker(el, old, act.slice(2));
+      });
+    }
+
+    async function setSpeaker(el, old, neu) {
+        if (old) { await api(`/api/transcripts/${t.id}/speakers/rename`, { method: 'POST', body: JSON.stringify({ von: old, zu: neu }) }); t.segments.forEach((s) => { if (s.speaker === old) s.speaker = neu; }); }
+        else { const idx = +el.closest('.block').querySelector('.seg').dataset.idx; await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ speaker: neu }) }); t.segments.find((s) => s.idx === idx).speaker = neu; }
+        draw();
+    }
+
+    async function editMeta() {
+      const card = modal.open(`<h2>Teilnehmende, Tagesordnung, Glossar</h2>
+        <p class="muted small">Namen werden beim Zuordnen der Sprecher angeboten und beim Bereinigen richtig geschrieben. Mit Tagesordnung gliedert sich das Ergebnisprotokoll nach den Punkten.</p>
+        <label class="field-label">Glossar<select id="d-glossar"><option value="alle">Alle Ämter</option></select></label>
+        ${sitzungsFelder('d', t.meta || {})}
+        <div class="modal-actions"><button class="btn" id="m-x">Abbrechen</button><button class="btn primary" id="m-ok">Speichern</button></div>`);
+      $('details.sitzung', card).open = true;
+      fillGlossarSelect($('#d-glossar', card), t.meta.glossar || 'alle'); bindSitzung('d');
+      $('#m-x', card).onclick = modal.close;
+      $('#m-ok', card).onclick = async () => {
+        const sd = sitzungsDaten('d');
+        t.meta = await api(`/api/transcripts/${t.id}/meta`, { method: 'PUT', body: JSON.stringify({ ...sd, glossar: $('#d-glossar', card).value }) });
+        modal.close(); draw(); toast('Gespeichert – gilt beim nächsten Bereinigen und Protokoll');
+      };
+    }
+
     function sizePanes() {
       const g = $('.d-grid'); if (!g) return;
       if (innerWidth <= 900) { g.style.height = ''; return; }
@@ -753,7 +940,8 @@
       if (onAct) m.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) { m.remove(); onAct(b.dataset.act); } });
     }
 
-    async function reload() { t = await api(`/api/transcripts/${id}`); if (!curStyle && t.protokoll) curStyle = t.protokoll.style; draw(); }
+    async function reload() {
+      aufgaben = null; t = await api(`/api/transcripts/${id}`); if (!curStyle && t.protokoll) curStyle = t.protokoll.style; draw(); }
 
     // ---- KI-Aufgaben im Hintergrund mit Fortschritt
     function watchTask(onDone) {
@@ -813,7 +1001,7 @@
       if (llm()) {
         try { await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); } catch (e) { toast(e.message, true); return; }
         task = { kind: 'protokoll', style, status: 'running', done: 0, total: 0, elapsed: 0 }; mTab = 'notes'; draw();
-        watchTask(async () => { t = await api(`/api/transcripts/${id}`); curStyle = style; mTab = 'notes'; editMd = false; draw(); toast(`${STYLE_INFO[style][0]} erstellt`); });
+        watchTask(async () => { t = await api(`/api/transcripts/${id}`); curStyle = style; mTab = 'notes'; editMd = false; aufgaben = null; draw(); loadAufgaben(); toast(`${STYLE_INFO[style][0]} erstellt`); });
         return;
       }
       const prompt = await api(`/api/transcripts/${t.id}/nova-prompt?style=${style}`);
@@ -834,6 +1022,7 @@
     }
 
     draw();
+    loadAufgaben();
     // Läuft schon eine KI-Aufgabe (z. B. nach Neuladen der Seite)? Dann Fortschritt weiter anzeigen.
     try {
       const s = await api(`/api/transcripts/${id}/task`);

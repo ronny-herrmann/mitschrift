@@ -102,7 +102,7 @@ def test_upload_rejects_unknown_type(client):
 
 def test_glossar_applies(client):
     client.put("/api/glossar", json={"eintraege": [{"von": "Testtext", "zu": "Glossartext"}, {"von": "", "zu": "x"}]})
-    assert client.get("/api/glossar").json() == [{"von": "Testtext", "zu": "Glossartext"}]
+    assert client.get("/api/glossar").json() == [{"von": "Testtext", "zu": "Glossartext", "amt": ""}]
     with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
         tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}).json()["id"]
     d = wait_done(client, tid)
@@ -302,3 +302,35 @@ def test_several_protocols_and_protocol_export(client):
     text = "\n".join(p.text for p in paras)
     assert "Inhaltlich geprüft am" in text and "[S0]" not in text
     assert "Transkript" not in [p.text for p in paras if p.style.name.startswith("Heading")], "nur das Protokoll"
+
+
+def test_glossar_per_amt_and_import(client):
+    client.put("/api/glossar", json={"eintraege": [
+        {"von": "Testtext", "zu": "Amt-A-Text", "amt": "10.5"},
+        {"von": "Sekunden", "zu": "Sek.", "amt": ""},
+    ]})
+    assert client.get("/api/glossar/aemter").json() == ["10.5"]
+    # Aufnahme für Amt 62.2: nur allgemeine Einträge greifen
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")},
+                          data={"glossar": "62.2", "teilnehmende": "Frau Müller, Herr Maier",
+                                "tagesordnung": "TOP 1: Haushalt\n2. Personal"}).json()["id"]
+    d = wait_done(client, tid)
+    assert all("Amt-A-Text" not in s["text"] and "Sek." in s["text"] for s in d["segments"])
+    assert d["meta"]["teilnehmende"] == ["Frau Müller", "Herr Maier"]
+    assert d["meta"]["tagesordnung"] == ["Haushalt", "Personal"]
+    # Excel-Import
+    import io
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active
+    ws.append(["Erkannt als", "Richtig", "Amt"]); ws.append(["CHS", "Excel", "20.1"]); ws.append(["Heilbrunn", "Heilbronn", None])
+    buf = io.BytesIO(); wb.save(buf)
+    r = client.post("/api/glossar/import", files={"file": ("g.xlsx", buf.getvalue(), "application/octet-stream")}, data={"amt": "62.2"})
+    assert r.json() == [{"von": "CHS", "zu": "Excel", "amt": "20.1"}, {"von": "Heilbrunn", "zu": "Heilbronn", "amt": "62.2"}]
+    # Tagesordnung aus Word
+    from docx import Document
+    doc = Document(); doc.add_paragraph("Tagesordnung"); doc.add_paragraph("TOP 1: Begrüßung"); doc.add_paragraph("TOP 2: Haushalt 2027")
+    b2 = io.BytesIO(); doc.save(b2)
+    punkte = client.post("/api/tagesordnung/lesen", files={"file": ("to.docx", b2.getvalue(), "application/octet-stream")}).json()
+    assert punkte[-2:] == ["Begrüßung", "Haushalt 2027"]
+    client.put("/api/glossar", json={"eintraege": []})

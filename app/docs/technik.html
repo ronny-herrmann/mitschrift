@@ -67,10 +67,20 @@
 <p><b>Eigene Korrekturen haben Vorrang:</b> Von Hand korrigierte Sätze werden markiert und von der Bereinigung nicht mehr verändert. Ersetzte Wörter („Bini Kum“ → „Winnie Puuh“) gelten als verbindliche Schreibweise für den restlichen Text und werden nach der KI-Antwort noch einmal durchgesetzt.</p>
 <p>Ohne Sprachmodell (z. B. lokal auf einem PC) gibt es einen Ausweichweg: Anweisung kopieren, in ein anderes KI-System einfügen, Antwort zurückkopieren – die Prüfungen laufen dann genauso.</p>
 
+<h2>Sitzungsdaten, Glossar je Amt, Suche, Aufgaben</h2>
+<ul>
+<li><b>Teilnehmende</b> (Anrede und Nachname) werden beim Zuordnen der Sprecher als Auswahl angeboten, der Spracherkennung als Schreibweise mitgegeben und stehen im Word-Export. Keine Stimmprofile.</li>
+<li><b>Tagesordnung</b> (eintippen oder aus Word/PDF/Text übernehmen): Die KI ordnet jede Aussage einem Tagesordnungspunkt zu; das Ergebnisprotokoll gliedert sich dann nach „TOP 1 …“. Die Überschriften kommen aus der Tagesordnung, nicht von der KI.</li>
+<li><b>Glossar je Amt</b>: Einträge können einem Amt zugeordnet werden; ohne Amt gelten sie für alle. Bei Aufnahme oder Upload wählt man „Alle Ämter“ oder ein Amt (dann gelten dessen und die allgemeinen Einträge). Import aus Excel oder CSV.</li>
+<li><b>Suche im Transkript</b> mit Hervorhebung; Enter springt zum nächsten Treffer.</li>
+<li><b>Aufgaben</b>: Die KI notiert Aufgaben als „Wer | Was | Bis wann“; nach der Prüfung erscheinen sie als Tabelle unter dem Protokoll und lassen sich für Teams, Outlook oder Excel kopieren.</li>
+</ul>
+
 <h2>Sprachmodell</h2>
 <ul>
 <li>Modell: <b>Ministral 3, 8B Instruct</b> (Dezember 2025) von Mistral AI, Datei im GGUF-Format, 4-bit-Quantisierung (Q4_K_M, ca. 5,2 GB). Lizenz Apache-2.0: kostenfrei, auch für Verwaltung und gewerbliche Nutzung. Seit 29.09.2026 statt der 3B-Variante – deutlich besseres Deutsch, dafür etwa dreimal langsamer (gemessen: 5 Sätze in ca. 13,5 s statt 3–4 s).</li>
-<li>Laufzeit: llama.cpp-Server mit OpenAI-kompatibler Schnittstelle, Kontext 24.576 Tokens, 2 parallele Anfragen, Temperatur 0 (möglichst deterministisch).</li>
+<li>Laufzeit: llama.cpp-Server mit OpenAI-kompatibler Schnittstelle, Kontext 12.288 Tokens, 2 parallele Anfragen, Temperatur 0 (möglichst deterministisch).</li>
+<li><b>Spekulatives Dekodieren</b> (seit 29.09.2026 im Test): Das kleine 3B-Modell schreibt einige Wörter vor, das 8B-Modell prüft sie in einem Rechenschritt und übernimmt nur, was es selbst genauso geschrieben hätte. Das Ergebnis ist dasselbe wie mit 8B allein, aber schneller – besonders beim Bereinigen, wo der Text größtenteils abgeschrieben wird. Beide Modelle zusammen belegen ca. 7,4 GB; deshalb der kleinere Kontext.</li>
 <li>Nur im internen Docker-Netz erreichbar, kein Port nach außen.</li>
 <li>Größere Varianten (8B, 14B) sind ohne Code-Änderung einsetzbar – eine Zeile in der Server-Konfiguration. 14B ist für den Regelbetrieb auf einem GPU-Server vorgesehen.</li>
 </ul>

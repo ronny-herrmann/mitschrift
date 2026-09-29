@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import logging
 import shutil
 import time
@@ -45,6 +46,36 @@ class State:
 
 
 state = State()
+
+
+META_DEFAULT = {"glossar": "alle", "teilnehmende": [], "tagesordnung": []}
+
+
+def _meta(tid: str) -> dict:
+    return {**META_DEFAULT, **state.store.get_setting(f"meta:{tid}", {})}
+
+
+def glossar_entries(scope: str = "alle", teilnehmende: list[str] | None = None) -> list[dict]:
+    """Glossar für eine Aufnahme: alle Einträge oder nur allgemeine + die eines Amts; Namen der
+    Teilnehmenden kommen als Pflicht-Schreibweise dazu (für Spracherkennung und KI)."""
+    alle = state.store.get_setting("glossar", [])
+    scope = scope or "alle"
+    ent = alle if scope == "alle" else [e for e in alle if (e.get("amt") or "") in ("", scope)]
+    return ent + [{"von": "", "zu": n} for n in (teilnehmende or []) if n]
+
+
+def glossar_for(tid: str) -> list[dict]:
+    m = _meta(tid)
+    return glossar_entries(m.get("glossar"), m.get("teilnehmende"))
+
+
+def _clean_list(items, limit: int = 40, maxlen: int = 200) -> list[str]:
+    out = []
+    for x in items or []:
+        x = " ".join(str(x).split())[:maxlen]
+        if x and x not in out:
+            out.append(x)
+    return out[:limit]
 
 
 def _korrekturen(tid: str) -> list[dict]:
@@ -125,7 +156,7 @@ def _load_models_once() -> None:
         transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []),
                                   final_factory=final_factory)
         state.model_info = backend.info()
-        state.jobs = JobQueue(transcriber, state.store, settings, llm_factory=get_llm)
+        state.jobs = JobQueue(transcriber, state.store, settings, llm_factory=get_llm, glossar_for=glossar_for)
         state.transcriber = transcriber
         state.jobs.resume_unfinished()
         state.startup_seconds = round(time.perf_counter() - t0, 1)
@@ -292,9 +323,31 @@ def llm_test():
             "tokens_pro_sekunde_ausgabe": None, "tokens_pro_sekunde_eingabe": None}
 
 
+_llm_ping = {"t": 0.0, "status": ""}
+
+
+async def llm_status() -> str:
+    """bereit | lädt | nicht erreichbar | '' (keine KI) – höchstens alle 20 s neu geprüft."""
+    if not settings.llm_configured:
+        return ""
+    if time.time() - _llm_ping["t"] < 20:
+        return _llm_ping["status"]
+    import httpx
+    url = settings.llm_base_url.rstrip("/").removesuffix("/v1") + "/health"
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as c:
+            r = await c.get(url)
+        status = "bereit" if r.status_code == 200 else "lädt" if r.status_code == 503 else "nicht erreichbar"
+    except Exception:
+        status = "nicht erreichbar"
+    _llm_ping.update(t=time.time(), status=status)
+    return status
+
+
 @app.get("/api/health", dependencies=[Depends(require_auth)])
 async def health():
     return {
+        "llm_status": await llm_status(),
         "app": settings.app_name,
         "version": __version__,
         "ready": state.transcriber is not None,
@@ -338,6 +391,7 @@ async def get_transcript(tid: str):
         d["progress"] = {"done": p[0], "total": p[1]}
     d["protokoll"] = state.store.get_protokoll(tid)
     d["protokolle"] = state.store.get_protokolle(tid)
+    d["meta"] = _meta(tid)
     return d
 
 
@@ -437,7 +491,8 @@ async def get_audio(tid: str):
 
 
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
-async def upload(file: UploadFile = File(...), title: str = Form("")):
+async def upload(file: UploadFile = File(...), title: str = Form(""), glossar: str = Form("alle"),
+                 teilnehmende: str = Form(""), tagesordnung: str = Form("")):
     require_ready()
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD:
@@ -446,6 +501,11 @@ async def upload(file: UploadFile = File(...), title: str = Form("")):
         title=title.strip() or Path(file.filename).stem, source="upload", status="processing",
         model=state.transcriber.final_backend.info().get("model", ""), language=settings.language,
     )
+    state.store.set_setting(f"meta:{t.id}", {
+        "glossar": glossar or "alle",
+        "teilnehmende": _clean_list(re.split(r"[\n,;]", teilnehmende)),
+        "tagesordnung": _clean_list(tagesordnung_zeilen(tagesordnung)),
+    })
     dest = settings.audio_dir / f"{t.id}{suffix}"
     with dest.open("wb") as f:
         shutil.copyfileobj(file.file, f, length=1024 * 1024)
@@ -488,9 +548,11 @@ async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: boo
         if format == "fliesstext":
             data, suffix = to_docx(t, fliesstext=True), "Fliesstext"
         elif format == "protokoll":
-            data, suffix = to_docx(t, p["content"]["protokoll_md"], pname, nur_protokoll=True, pruefstatus=_pruefstatus(p)), pname
+            data, suffix = to_docx(t, p["content"]["protokoll_md"], pname, nur_protokoll=True, pruefstatus=_pruefstatus(p),
+                                   teilnehmende=_meta(tid)["teilnehmende"]), pname
         else:
-            data = to_docx(t, p["content"]["protokoll_md"] if p else None, pname, pruefstatus=_pruefstatus(p) if p else "")
+            data = to_docx(t, p["content"]["protokoll_md"] if p else None, pname, pruefstatus=_pruefstatus(p) if p else "",
+                           teilnehmende=_meta(tid)["teilnehmende"])
             suffix = f"Transkript und {pname}" if p else "Transkript"
         return Response(data, media_type=DOCX_TYPE, headers=_download_headers(t.title, suffix, "docx"))
     raise HTTPException(400, "format muss txt, md, srt, docx, protokoll oder fliesstext sein")
@@ -527,9 +589,10 @@ async def make_protokoll(tid: str, body: ProtokollRequest):
     def run(progress):
         cache = state.store.get_setting(f"extrakt:{tid}", None)
         from .protokoll import transcript_hash
-        if cache and cache.get("hash") == transcript_hash(t):
+        if cache and cache.get("hash") == transcript_hash(t, _meta(tid).get("tagesordnung") or []):
             state.tasks[tid]["cached"] = True
-        content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache, workers=settings.llm_parallel)
+        content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache, workers=settings.llm_parallel,
+                                   tagesordnung=_meta(tid).get("tagesordnung") or [])
         state.store.set_setting(f"extrakt:{tid}", content.pop("extrakt"))
         return state.store.save_protokoll(tid, style, "entwurf", content)
 
@@ -601,7 +664,7 @@ async def get_bereinigt(tid: str):
 @app.get("/api/transcripts/{tid}/bereinigen-prompt", dependencies=[Depends(require_auth)])
 async def bereinigen_prompt(tid: str):
     t = _get_or_404(tid)
-    return PlainTextResponse(bereinigung.build_prompt(t, state.store.get_setting("glossar", []), _korrekturen(tid)))
+    return PlainTextResponse(bereinigung.build_prompt(t, glossar_for(tid), _korrekturen(tid)))
 
 
 def _store_clean(t, cleaned: dict[int, str]) -> dict:
@@ -629,7 +692,7 @@ async def bereinigen(tid: str):
         raise HTTPException(400, "Transkript ist leer")
 
     def run(progress):
-        cleaned = bereinigung.clean_segments(llm, t.segments, state.store.get_setting("glossar", []),
+        cleaned = bereinigung.clean_segments(llm, t.segments, glossar_for(tid),
                                              korrekturen=_korrekturen(tid), progress=progress,
                                              workers=settings.llm_parallel)
         return _store_clean(t, cleaned)
@@ -665,6 +728,11 @@ class GlossarBody(BaseModel):
     eintraege: list[dict]
 
 
+def _norm_entry(e: dict) -> dict:
+    return {"von": str(e.get("von", "")).strip(), "zu": str(e.get("zu", "")).strip(),
+            "amt": str(e.get("amt", "") or "").strip()}
+
+
 @app.get("/api/glossar", dependencies=[Depends(require_auth)])
 async def get_glossar():
     return state.store.get_setting("glossar", [])
@@ -672,10 +740,100 @@ async def get_glossar():
 
 @app.put("/api/glossar", dependencies=[Depends(require_auth)])
 async def put_glossar(body: GlossarBody):
-    clean = [{"von": str(e.get("von", "")).strip(), "zu": str(e.get("zu", "")).strip()} for e in body.eintraege]
+    clean = [_norm_entry(e) for e in body.eintraege]
     clean = [e for e in clean if e["von"] and e["zu"]]
     state.store.set_setting("glossar", clean)
     return clean
+
+
+@app.get("/api/glossar/aemter", dependencies=[Depends(require_auth)])
+async def glossar_aemter():
+    return sorted({e.get("amt", "") for e in state.store.get_setting("glossar", []) if e.get("amt")})
+
+
+@app.post("/api/glossar/import", dependencies=[Depends(require_auth)])
+async def glossar_import(file: UploadFile = File(...), amt: str = Form("")):
+    """Excel (.xlsx) oder CSV einlesen. Spalten: „Erkannt als“/„Falsch“, „Richtig“, optional „Amt“ –
+    ohne Kopfzeile gelten die ersten beiden Spalten. Liefert die Einträge zurück (noch nicht gespeichert)."""
+    from .glossar import read_table
+    data = await file.read()
+    try:
+        rows = read_table(file.filename or "", data)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    out = []
+    for r in rows:
+        e = _norm_entry({**r, "amt": r.get("amt") or amt})
+        if e["von"] and e["zu"]:
+            out.append(e)
+    if not out:
+        raise HTTPException(400, "Keine Einträge gefunden – erwartet werden zwei Spalten: erkannt als | richtig")
+    return out
+
+
+# --- Sitzungsdaten: Teilnehmende, Tagesordnung, Glossar-Auswahl -----------------------
+class MetaBody(BaseModel):
+    glossar: str | None = None
+    teilnehmende: list[str] | None = None
+    tagesordnung: list[str] | None = None
+
+
+@app.get("/api/transcripts/{tid}/meta", dependencies=[Depends(require_auth)])
+async def get_meta(tid: str):
+    _get_or_404(tid)
+    return _meta(tid)
+
+
+@app.put("/api/transcripts/{tid}/meta", dependencies=[Depends(require_auth)])
+async def put_meta(tid: str, body: MetaBody):
+    _get_or_404(tid)
+    m = _meta(tid)
+    if body.glossar is not None:
+        m["glossar"] = body.glossar or "alle"
+    if body.teilnehmende is not None:
+        m["teilnehmende"] = _clean_list(body.teilnehmende)
+    if body.tagesordnung is not None:
+        m["tagesordnung"] = _clean_list(body.tagesordnung)
+    state.store.set_setting(f"meta:{tid}", m)
+    return m
+
+
+def tagesordnung_zeilen(text: str) -> list[str]:
+    """„TOP 1: Haushalt“, „1. Haushalt“, „- Haushalt“ → „Haushalt“ (eine Zeile je Punkt)."""
+    out = []
+    for line in (text or "").splitlines():
+        line = re.sub(r"^\s*(?:TOP\s*)?(?:\d+[.)]?\d*[.)]?|[-*•–])\s*[:.)-]?\s*", "", line.strip(), flags=re.I).strip()
+        if len(line) >= 2:
+            out.append(line)
+    return out
+
+
+@app.post("/api/tagesordnung/lesen", dependencies=[Depends(require_auth)])
+async def tagesordnung_lesen(file: UploadFile = File(...)):
+    """Tagesordnung aus Word, PDF oder Text lesen → Liste der Punkte (noch nicht gespeichert)."""
+    from .glossar import read_text
+    try:
+        text = read_text(file.filename or "", await file.read())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    punkte = _clean_list(tagesordnung_zeilen(text))
+    if not punkte:
+        raise HTTPException(400, "In der Datei wurden keine Tagesordnungspunkte gefunden.")
+    return punkte
+
+
+@app.get("/api/transcripts/{tid}/aufgaben", dependencies=[Depends(require_auth)])
+async def aufgaben(tid: str):
+    """Aufgaben (wer, was, bis wann) aus der geprüften Auswertung des Protokolls."""
+    _get_or_404(tid)
+    ex = state.store.get_setting(f"extrakt:{tid}", None) or {}
+    out = []
+    for a in ex.get("abschnitte", []):
+        for it in a.get("items", []):
+            if it.get("typ") == "AUFGABE":
+                out.append({"wer": it.get("wer", ""), "was": it.get("was") or it.get("text", ""),
+                            "bis": it.get("bis", ""), "refs": it.get("refs", [])})
+    return out
 
 
 # --- Live-WebSocket --------------------------------------------------------------------
@@ -698,6 +856,8 @@ async def ws_live(ws: WebSocket):
         return
     await ws.accept()
     title = ws.query_params.get("title", "")
+    scope = ws.query_params.get("glossar", "alle")
+    namen = _clean_list(re.split(r"[\n,;]", ws.query_params.get("teilnehmende", "")))
 
     async def send(msg: dict) -> None:
         try:
@@ -706,9 +866,10 @@ async def ws_live(ws: WebSocket):
             pass
 
     session = LiveSession(state.transcriber, state.store, settings, send, on_saved=_on_live_saved,
-                          llm_factory=get_llm)
+                          llm_factory=get_llm, glossar_entries=glossar_entries(scope, namen))
     try:
         await session.start(title)
+        state.store.set_setting(f"meta:{session.transcript.id}", {**META_DEFAULT, "glossar": scope, "teilnehmende": namen})
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":
