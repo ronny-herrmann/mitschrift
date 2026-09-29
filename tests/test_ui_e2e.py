@@ -83,6 +83,7 @@ def test_live_recording_in_browser(page, server):
     page.fill("#r-title", "E2E Live")
     assert page.is_disabled("#r-start")
     page.check("#r-consent")
+    _shot(page, "aufnahme_start")
     page.click("#r-start")
     page.wait_for_selector("#r-text .fin", timeout=20_000)
     page.wait_for_timeout(5000)
@@ -168,6 +169,8 @@ def test_upload_detail_edit_and_summary_import(page, server):
 
 def test_info_pages(page, server):
     page.goto(server + "/#/faq")
+    page.wait_for_timeout(600)
+    _shot(page, "faq")
     page.wait_for_selector("#doc details")
     assert "Häufige Fragen" in page.inner_text(".page-head")
     for tab, needle in [("technik", "Live-Aufnahme"), ("infrastruktur", "Schaubild"), ("datenschutz", "Fragen an den"),

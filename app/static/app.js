@@ -130,19 +130,22 @@
   async function renderAufnahme() {
     view.innerHTML = `
       <section class="rec-setup" id="setup">
-        <h1>Neue Aufnahme</h1>
-        <div class="rec-fields">
-          <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung" autocomplete="off"></label>
-          <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
+        <div class="page-head"><h1>Neue Aufnahme</h1><p>Besprechung live mitschreiben – der Text erscheint, während gesprochen wird.</p></div>
+        <div class="card rec-card">
+          <div class="rec-fields">
+            <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung" autocomplete="off"></label>
+            <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
+          </div>
+          <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
+          <div class="rec-start">
+            <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
+            <div class="rec-start-text"><strong>Aufnahme starten</strong><div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div></div>
+          </div>
         </div>
-        <div class="field-hint">Ohne Titel wird Datum und Uhrzeit verwendet. Der Titel lässt sich jederzeit ändern – auch während der Aufnahme.</div>
-        <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
-        <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
-        <div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div>
         <div class="rec-tips">
           <div><strong>Mikrofon nah dran</strong>Ein Konferenzmikrofon in der Tischmitte bringt mehr als jedes Modell.</div>
           <div><strong>Alles bleibt im Haus</strong>Audio und Text werden nur auf diesem Server verarbeitet.</div>
-          <div><strong>Nach dem Stopp</strong>Genaue Erkennung und Sprechererkennung laufen automatisch. Bereinigen und Protokoll starten Sie selbst per Klick.</div>
+          <div><strong>Nach dem Stopp</strong>Mit „Text bereinigen“ und „Protokoll erstellen“ verbessern Sie das Ergebnis per Klick.</div>
         </div>
       </section>
       <section class="rec-live hidden" id="live">
@@ -171,7 +174,7 @@
     } catch { }
     const updateStart = () => {
       startBtn.disabled = !consent.checked || !health.ready;
-      hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Zum Starten tippen' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
+      hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Bereit – zum Starten auf den roten Knopf tippen.' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
     };
     consent.addEventListener('change', updateStart);
     document.addEventListener('health', updateStart);
