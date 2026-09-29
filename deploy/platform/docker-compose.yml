@@ -29,14 +29,16 @@ services:
     networks: [mitschrift]
 
   llm:
+    # Modell und Kontext kommen aus dem Repository (LLM_GGUF / LLM_GGUF_CTX nur zum Übersteuern in platform.env).
+    # Ministral 3 8B: deutlich besseres Deutsch als 3B, etwa 2,5–3× langsamer; Kontext 16k passt in 16 GB RAM.
     image: ghcr.io/ggml-org/llama.cpp:server
     restart: unless-stopped
     logging: *logs
     # Nur im internen Netz erreichbar – kein Port nach außen.
     command: >
-      -hf ${LLM_HF_MODEL:-mistralai/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M}
+      -hf ${LLM_GGUF:-mistralai/Ministral-3-8B-Instruct-2512-GGUF:Q4_K_M}
       --host 0.0.0.0 --port 8080
-      --ctx-size ${LLM_CTX:-24576}
+      --ctx-size ${LLM_GGUF_CTX:-16384}
       --parallel ${LLM_PARALLEL:-2}
       --threads ${LLM_THREADS:-4}
       --jinja

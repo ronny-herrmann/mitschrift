@@ -6,7 +6,7 @@
 #   REPO_URL=https://github.com/<konto>/mitschrift.git
 #   ACCESS_PASSWORD=<Zugangspasswort für die Oberfläche>
 # Optional: GITHUB_TOKEN (nur bei privatem Repo, nur Lese-Recht), ACME_EMAIL, TEST_HOST, PROD_HOST,
-#           LLM_HF_MODEL, PROD_BRANCH (Standard: stable), TEST_BRANCH (Standard: main)
+#           LLM_GGUF, PROD_BRANCH (Standard: stable), TEST_BRANCH (Standard: main)
 set -euo pipefail
 BASE=/opt/mitschrift
 # settings.env wörtlich einlesen (nicht per "source": Passwörter mit $ & ; Leerzeichen bleiben unverändert)
@@ -116,9 +116,9 @@ cat > "$BASE/platform.env" <<EOF
 TEST_HOST=$TEST_HOST
 PROD_HOST=$PROD_HOST
 ACME_EMAIL=${ACME_EMAIL:-}
-LLM_HF_MODEL=${LLM_HF_MODEL:-mistralai/Ministral-3-3B-Instruct-2512-GGUF:Q4_K_M}
+LLM_GGUF=${LLM_GGUF:-mistralai/Ministral-3-8B-Instruct-2512-GGUF:Q4_K_M}
 LLM_THREADS=$(nproc)
-LLM_CTX=${LLM_CTX:-24576}
+LLM_GGUF_CTX=${LLM_GGUF_CTX:-16384}
 LLM_PARALLEL=${LLM_PARALLEL:-2}
 EOF
 
