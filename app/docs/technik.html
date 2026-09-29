@@ -107,7 +107,8 @@
 <tbody>
 <tr><td><code>ASR_BACKEND</code></td><td>parakeet</td><td>Spracherkennung (alternativ whisper)</td></tr>
 <tr><td><code>VAD_MIN_SILENCE_MS</code></td><td>550</td><td>Pause, nach der ein Satz fest wird</td></tr>
-<tr><td><code>LIVE_AI_CLEAN</code></td><td>1</td><td>Sätze live bereinigen</td></tr>
+<tr><td><code>AUTO_AI_CLEAN</code></td><td>0</td><td>automatisch bereinigen; Standard: nur per Klick auf „Bereinigen“</td></tr>
+<tr><td><code>LIVE_AI_CLEAN</code></td><td>1</td><td>bei AUTO_AI_CLEAN=1: Sätze schon live bereinigen</td></tr>
 <tr><td><code>DIARIZATION_THRESHOLD</code></td><td>0,7</td><td>kleiner = mehr Sprecher</td></tr>
 <tr><td><code>RETENTION_AUDIO_HOURS</code> / <code>…_TRANSCRIPT_HOURS</code></td><td>168 / 720</td><td>automatische Löschfristen</td></tr>
 <tr><td><code>ACCESS_PASSWORD</code>, <code>SESSION_SECRET</code></td><td>gesetzt</td><td>Zugang, Signatur der Sitzung</td></tr>

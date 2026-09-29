@@ -39,7 +39,7 @@ class LiveSession:
         self.settings = settings
         self.send = send
         self.on_saved = on_saved
-        self.llm = llm_factory() if (llm_factory and settings.live_ai_clean) else None
+        self.llm = llm_factory() if (llm_factory and settings.live_ai_clean and settings.auto_ai_clean) else None
         self._stopped = False
         self.vad = SileroVAD()  # eigener Zustand pro Sitzung
         self.segmenter = Segmenter(**transcriber.vad_kwargs(offline=False))

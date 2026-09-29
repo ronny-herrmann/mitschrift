@@ -142,7 +142,7 @@
         <div class="rec-tips">
           <div><strong>Mikrofon nah dran</strong>Ein Konferenzmikrofon in der Tischmitte bringt mehr als jedes Modell.</div>
           <div><strong>Alles bleibt im Haus</strong>Audio und Text werden nur auf diesem Server verarbeitet.</div>
-          <div><strong>Nach dem Stopp</strong>Genaue Erkennung, Sprechererkennung und KI-Bereinigung laufen automatisch im Hintergrund.</div>
+          <div><strong>Nach dem Stopp</strong>Genaue Erkennung und Sprechererkennung laufen automatisch. Bereinigen und Protokoll starten Sie selbst per Klick.</div>
         </div>
       </section>
       <section class="rec-live hidden" id="live">
@@ -309,7 +309,7 @@
           <div class="ico">${ICON.check}</div>
           <div class="grow">
             <strong>Die Aufnahme ist gespeichert.</strong>
-            <div class="muted small">${m.refining ? 'Jetzt laufen automatisch: genaue Erkennung → Sprecher → KI-Bereinigung. Sie können das Transkript sofort öffnen – es aktualisiert sich von selbst.' : 'Das Transkript ist fertig.'}</div>
+            <div class="muted small">${m.refining ? 'Jetzt laufen automatisch: genaue Erkennung → Sprechererkennung. Sie können das Transkript sofort öffnen – es aktualisiert sich von selbst. Bereinigen und Protokoll starten Sie dort per Klick.' : 'Das Transkript ist fertig. Bereinigen und Protokoll starten Sie dort per Klick.'}</div>
           </div>
           <div class="done-actions"><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a></div>
         </div>`;
@@ -380,9 +380,10 @@
   }
   function progressText(p) {
     if (!p) return 'wartet …';
-    if (p.done === -1) return 'Schritt 2 von 3: Sprecher werden erkannt …';
-    if (p.done === -2) return 'Schritt 3 von 3: KI bereinigt den Text …';
-    return `Schritt 1 von 3: genaue Erkennung … ${p.done}/${p.total} Abschnitte`;
+    const n = health && health.auto_ai_clean ? 3 : 2;
+    if (p.done === -1) return `Schritt 2 von ${n}: Sprecher werden erkannt …`;
+    if (p.done === -2) return `Schritt 3 von ${n}: KI bereinigt den Text …`;
+    return `Schritt 1 von ${n}: genaue Erkennung … ${p.done}/${p.total} Abschnitte`;
   }
   const progressPct = (p) => (!p ? 0 : p.done === -1 ? 70 : p.done === -2 ? 85 : Math.round(60 * p.done / Math.max(1, p.total)));
 
@@ -773,7 +774,7 @@
         t = n;
         if (changed) {
           draw(); const b = audio(); if (b && pos) { b.currentTime = pos; if (playing) b.play().catch(() => { }); }
-          if (n.status === 'done') { toast(hasClean() ? 'Fertig: genaue Erkennung, Sprecher und KI-Bereinigung abgeschlossen' : 'Fertig verfeinert'); loadSide(); }
+          if (n.status === 'done') { toast(hasClean() ? 'Fertig: genaue Erkennung, Sprecher und KI-Bereinigung abgeschlossen' : 'Fertig: genaue Erkennung und Sprecher. Jetzt können Sie bereinigen oder ein Protokoll erstellen.'); loadSide(); }
         }
       } catch { }
     }, 2000);

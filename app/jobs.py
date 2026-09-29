@@ -111,7 +111,7 @@ class JobQueue:
                     seg.speaker = best
 
         # KI-Bereinigung (falls eine KI angebunden ist)
-        llm = self.llm_factory() if self.llm_factory else None
+        llm = self.llm_factory() if (self.llm_factory and self.settings.auto_ai_clean) else None
         if llm is not None and segments:
             self._progress[tid] = (-2, 0)  # Anzeige: „KI bereinigt“
             try:

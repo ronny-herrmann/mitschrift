@@ -88,6 +88,8 @@ class Settings:
     live_partial_interval_s: float = field(default_factory=lambda: _env_float("LIVE_PARTIAL_INTERVAL_S", 1.0))
     # KI-Bereinigung jedes fertigen Satzes schon während der Aufnahme (nur mit LLM_*)
     live_ai_clean: bool = field(default_factory=lambda: _env_bool("LIVE_AI_CLEAN", True))
+    # Automatisch bereinigen (live und nach dem Stopp)? Standard: nein – die Nutzenden klicken selbst auf „Bereinigen“.
+    auto_ai_clean: bool = field(default_factory=lambda: _env_bool("AUTO_AI_CLEAN", False))
     vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
     vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))
 
