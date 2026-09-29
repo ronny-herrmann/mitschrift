@@ -41,9 +41,41 @@ class State:
     startup_seconds: float = 0.0
     load_status: str = "lädt"      # lädt | bereit | fehler
     load_error: str = ""
+    tasks: dict = {}               # tid → laufende/letzte KI-Aufgabe (Bereinigen, Protokoll)
 
 
 state = State()
+
+
+def _korrekturen(tid: str) -> list[dict]:
+    return state.store.get_setting(f"korrekturen:{tid}", [])
+
+
+def _start_task(tid: str, kind: str, fn) -> dict:
+    """KI-Aufgabe im Hintergrund starten; Fortschritt über GET /api/transcripts/{tid}/task."""
+    import threading
+    cur = state.tasks.get(tid)
+    if cur and cur["status"] == "running":
+        raise HTTPException(409, "Für dieses Transkript läuft bereits eine KI-Aufgabe.")
+    task = {"kind": kind, "status": "running", "done": 0, "total": 0, "started": time.time(), "result": None, "error": ""}
+    state.tasks[tid] = task
+
+    def progress(done: int, total: int) -> None:
+        task["done"], task["total"] = done, total
+
+    def run() -> None:
+        try:
+            task["result"] = fn(progress)
+            task["status"] = "done"
+        except ValueError as e:
+            task["status"], task["error"] = "error", str(e)
+        except Exception as e:
+            log.exception("KI-Aufgabe %s fehlgeschlagen", kind)
+            task["status"], task["error"] = "error", f"KI-Fehler: {e}"
+        task["seconds"] = round(time.time() - task["started"], 1)
+
+    threading.Thread(target=run, name=f"task-{kind}", daemon=True).start()
+    return {"started": True, "kind": kind}
 
 
 def get_llm() -> LLMClient | None:
@@ -315,11 +347,46 @@ class SegmentPatch(BaseModel):
 
 @app.patch("/api/transcripts/{tid}/segments/{idx}", dependencies=[Depends(require_auth)])
 async def patch_segment(tid: str, idx: int, body: SegmentPatch):
-    _get_or_404(tid)
-    fields = {k: v for k, v in body.model_dump().items() if v is not None}
-    if not state.store.update_segment(tid, idx, **fields):
+    t = _get_or_404(tid)
+    seg = next((s for s in t.segments if s.idx == idx), None)
+    if seg is None:
         raise HTTPException(404, "Segment nicht gefunden")
-    return {"ok": True}
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    paare: list[dict] = []
+    if "text" in fields or "clean" in fields:
+        alt = seg.clean or seg.text
+        neu = fields.get("clean", fields.get("text", ""))
+        # Die eigene Korrektur gilt: sichtbarer Text = eingegebener Text, KI fasst das Segment nicht mehr an
+        fields.update(text=neu if "text" in fields else seg.text, clean=neu if seg.clean or "clean" in fields else "",
+                      clean_note="", edited=True)
+        paare = bereinigung.korrektur_paare(alt, neu)
+        if paare:
+            bekannt = _korrekturen(tid)
+            for p in paare:
+                bekannt = [k for k in bekannt if k["von"].lower() != p["von"].lower()] + [p]
+            state.store.set_setting(f"korrekturen:{tid}", bekannt[-50:])
+    state.store.update_segment(tid, idx, **fields)
+    weitere = bereinigung.weitere_stellen(t.segments, paare, idx) if paare else []
+    return {"ok": True, "korrekturen": paare, "weitere_stellen": weitere}
+
+
+class ReplaceBody(BaseModel):
+    paare: list[dict]
+
+
+@app.post("/api/transcripts/{tid}/ersetzen", dependencies=[Depends(require_auth)])
+async def ersetzen(tid: str, body: ReplaceBody):
+    """Eine Korrektur an allen weiteren Stellen übernehmen („Bini Kum“ → „Winnie Puuh“)."""
+    from .glossar import apply_glossar, compile_glossar
+    t = _get_or_404(tid)
+    rules = compile_glossar([{"von": str(p.get("von", "")), "zu": str(p.get("zu", ""))} for p in body.paare])
+    n = 0
+    for s in t.segments:
+        neu_text, neu_clean = apply_glossar(s.text, rules), apply_glossar(s.clean, rules) if s.clean else ""
+        if neu_text != s.text or neu_clean != s.clean:
+            state.store.update_segment(tid, s.idx, text=neu_text, clean=neu_clean, edited=True)
+            n += 1
+    return {"ersetzt": n}
 
 
 class SpeakerRename(BaseModel):
@@ -373,25 +440,42 @@ async def upload(file: UploadFile = File(...), title: str = Form("")):
     return {"id": t.id, "title": t.title, "status": "processing"}
 
 
+def _download_headers(title: str, suffix: str, ext: str) -> dict:
+    from urllib.parse import quote
+    base = "".join(c for c in title if c.isalnum() or c in " _-.").strip() or "Transkript"
+    name = f"{base} - {suffix}.{ext}"
+    ascii_name = name.encode("ascii", "ignore").decode() or f"transkript.{ext}"
+    return {"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"}
+
+
+DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
 @app.get("/api/transcripts/{tid}/export", dependencies=[Depends(require_auth)])
 async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: bool = True, protokoll: bool = False):
     t = _get_or_404(tid)
-    safe = "".join(c for c in t.title if c.isalnum() or c in " _-").strip() or "transkript"
     if format == "txt":
-        return PlainTextResponse(to_txt(t, zeit, sprecher), headers={"Content-Disposition": f'attachment; filename="{safe}.txt"'})
+        suffix = "Transkript mit Zeit und Sprecher" if (zeit and sprecher) else "Fliesstext"
+        return PlainTextResponse(to_txt(t, zeit, sprecher), headers=_download_headers(t.title, suffix, "txt"))
     if format == "md":
-        return PlainTextResponse(to_markdown(t), media_type="text/markdown", headers={"Content-Disposition": f'attachment; filename="{safe}.md"'})
+        return PlainTextResponse(to_markdown(t), media_type="text/markdown", headers=_download_headers(t.title, "Markdown", "md"))
     if format == "srt":
-        return PlainTextResponse(to_srt(t), headers={"Content-Disposition": f'attachment; filename="{safe}.srt"'})
-    if format == "docx":
-        pm = None
+        return PlainTextResponse(to_srt(t), headers=_download_headers(t.title, "Untertitel", "srt"))
+    if format in ("docx", "fliesstext"):
+        pm, pname = None, ""
         if protokoll:
             p = state.store.get_protokoll(tid)
             pm = (p or {}).get("content", {}).get("protokoll_md")
-        data = to_docx(t, pm)
-        return Response(data, media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        headers={"Content-Disposition": f'attachment; filename="{safe}.docx"'})
-    raise HTTPException(400, "format muss txt, md, srt oder docx sein")
+            pname = STYLES.get((p or {}).get("style", ""), "Zusammenfassung")
+            if not pm:
+                raise HTTPException(404, "Noch keine Zusammenfassung vorhanden")
+        if format == "fliesstext":
+            data, suffix = to_docx(t, fliesstext=True), "Fliesstext"
+        else:
+            data = to_docx(t, pm, pname)
+            suffix = f"Transkript und {pname}" if pm else "Transkript"
+        return Response(data, media_type=DOCX_TYPE, headers=_download_headers(t.title, suffix, "docx"))
+    raise HTTPException(400, "format muss txt, md, srt, docx oder fliesstext sein")
 
 
 @app.get("/api/transcripts/{tid}/nova-prompt", dependencies=[Depends(require_auth)])
@@ -406,19 +490,35 @@ class ProtokollRequest(BaseModel):
 
 @app.post("/api/transcripts/{tid}/protokoll", dependencies=[Depends(require_auth)])
 async def make_protokoll(tid: str, body: ProtokollRequest):
+    """Startet die Protokollerstellung im Hintergrund. Fortschritt: GET …/task, Ergebnis: GET …/{tid}."""
     t = _get_or_404(tid)
     if not settings.llm_configured:
         raise HTTPException(409, "Keine KI angebunden (LLM_BASE_URL/LLM_MODEL). Nutze „Prompt für NOVA kopieren“.")
     if not t.segments:
         raise HTTPException(400, "Transkript ist leer")
-    llm = LLMClient(settings.llm_base_url, settings.llm_api_key, settings.llm_model, settings.llm_timeout_s)
-    loop = asyncio.get_running_loop()
-    try:
-        content = await loop.run_in_executor(None, create_protokoll, t, body.style, llm)
-    except Exception as e:
-        log.exception("Protokollerstellung fehlgeschlagen")
-        raise HTTPException(502, f"Protokoll-KI-Fehler: {e}")
-    return state.store.save_protokoll(tid, body.style, "entwurf", content)
+    style = body.style if body.style in STYLES else "zusammenfassung"
+
+    def run(progress):
+        cache = state.store.get_setting(f"extrakt:{tid}", None)
+        content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache)
+        state.store.set_setting(f"extrakt:{tid}", content.pop("extrakt"))
+        return state.store.save_protokoll(tid, style, "entwurf", content)
+
+    res = _start_task(tid, "protokoll", run)
+    state.tasks[tid]["style"] = style
+    return res
+
+
+@app.get("/api/transcripts/{tid}/task", dependencies=[Depends(require_auth)])
+async def get_task(tid: str):
+    task = state.tasks.get(tid)
+    if not task:
+        return {"status": "none"}
+    out = {k: v for k, v in task.items() if k != "result"}
+    out["elapsed"] = round(time.time() - task["started"], 1)
+    if task["status"] == "done" and task["kind"] == "bereinigen":
+        out["result"] = task["result"]
+    return out
 
 
 class ProtokollImport(BaseModel):
@@ -468,37 +568,39 @@ async def get_bereinigt(tid: str):
 @app.get("/api/transcripts/{tid}/bereinigen-prompt", dependencies=[Depends(require_auth)])
 async def bereinigen_prompt(tid: str):
     t = _get_or_404(tid)
-    return PlainTextResponse(bereinigung.build_prompt(t, state.store.get_setting("glossar", [])))
+    return PlainTextResponse(bereinigung.build_prompt(t, state.store.get_setting("glossar", []), _korrekturen(tid)))
 
 
 def _store_clean(t, cleaned: dict[int, str]) -> dict:
-    changes, ok_n, bad_n = bereinigung.apply_cleaned(t.segments, cleaned)
+    segs = [s for s in t.segments if not s.edited]
+    changes, ok_n, bad_n = bereinigung.apply_cleaned(segs, cleaned)
     for c in changes:
         if c["ok"]:
             state.store.update_segment(t.id, c["idx"], clean=c["clean"], clean_note="")
         else:
             state.store.update_segment(t.id, c["idx"], clean="", clean_note=c["grund"])
-    missing = len([s for s in t.segments if s.idx not in cleaned])
+    missing = len([s for s in segs if s.idx not in cleaned])
     return {"uebernommen": ok_n, "verworfen": bad_n, "fehlend": missing,
+            "eigene_korrekturen_behalten": len(t.segments) - len(segs),
             "verworfen_details": [c for c in changes if not c["ok"]]}
 
 
 @app.post("/api/transcripts/{tid}/bereinigen", dependencies=[Depends(require_auth)])
 async def bereinigen(tid: str):
+    """Startet die KI-Bereinigung im Hintergrund. Von Hand korrigierte Sätze bleiben unangetastet."""
     t = _get_or_404(tid)
     llm = get_llm()
     if llm is None:
         raise HTTPException(409, "Keine KI angebunden (LLM_BASE_URL/LLM_MODEL). Nutze „Prompt für NOVA kopieren“.")
     if not t.segments:
         raise HTTPException(400, "Transkript ist leer")
-    loop = asyncio.get_running_loop()
-    try:
-        cleaned = await loop.run_in_executor(None, bereinigung.clean_segments, llm, t.segments,
-                                             state.store.get_setting("glossar", []))
-    except Exception as e:
-        log.exception("Bereinigung fehlgeschlagen")
-        raise HTTPException(502, f"KI-Fehler: {e}")
-    return _store_clean(t, cleaned)
+
+    def run(progress):
+        cleaned = bereinigung.clean_segments(llm, t.segments, state.store.get_setting("glossar", []),
+                                             korrekturen=_korrekturen(tid), progress=progress)
+        return _store_clean(t, cleaned)
+
+    return _start_task(tid, "bereinigen", run)
 
 
 class CleanImport(BaseModel):
@@ -519,7 +621,8 @@ async def bereinigen_import(tid: str, body: CleanImport):
 async def bereinigen_verwerfen(tid: str):
     t = _get_or_404(tid)
     for s in t.segments:
-        state.store.update_segment(tid, s.idx, clean="", clean_note="")
+        if not s.edited:
+            state.store.update_segment(tid, s.idx, clean="", clean_note="")
     return {"ok": True}
 
 
@@ -583,6 +686,8 @@ async def ws_live(ws: WebSocket):
                 if text.startswith("{") and '"stop"' in text:
                     await session.stop()
                     break
+                if text.startswith("{") and '"pause"' in text:
+                    await session.pause()
     except WebSocketDisconnect:
         log.info("Live-Verbindung getrennt – sichere Aufnahme")
         await session.abort()

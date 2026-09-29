@@ -117,6 +117,23 @@ class LiveSession:
         finally:
             self._partial_busy = False
 
+    # --- Pause ------------------------------------------------------------------
+    async def pause(self) -> None:
+        """Pause: angefangenen Satz abschließen. Die Oberfläche schickt bis zum Weiter kein Audio."""
+        if self.transcript is None or self._stopped:
+            return
+        if len(self._pending):
+            chunk = np.pad(self._pending, (0, CHUNK - len(self._pending)))
+            self._pending = np.zeros(0, dtype=np.float32)
+            for seg in self.segmenter.push(chunk, self.vad.prob(chunk)):
+                self._utt += 1
+                await self._queue.put(seg)
+        for seg in self.segmenter.flush():
+            self._utt += 1
+            await self._queue.put(seg)
+        self.vad.reset()
+        await self.send({"type": "paused"})
+
     # --- Stopp ------------------------------------------------------------------
     async def stop(self) -> dict:
         """Aufnahme beenden, Ergebnis speichern und zurückgeben."""

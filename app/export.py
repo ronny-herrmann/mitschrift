@@ -55,9 +55,33 @@ def to_srt(t: Transcript) -> str:
     return "\n".join(out)
 
 
-def to_docx(t: Transcript, protokoll_md: str | None = None) -> bytes:
+def refs_to_times(md: str, t: Transcript) -> str:
+    """[S12] → [03:41] – im Export sind Zeitmarken verständlicher als Segmentnummern."""
+    import re
+    starts = {s.idx: s.start for s in t.segments}
+
+    def repl(m):
+        nums = [int(n) for n in re.findall(r"\d+", m.group(0))]
+        times = [fmt_time(starts[n]) for n in nums if n in starts]
+        return f"[{', '.join(dict.fromkeys(times))}]" if times else ""
+    return re.sub(r"\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]", repl, md)
+
+
+def _md_inline(p, text: str) -> None:
+    """**fett** aus dem Protokoll als fette Schrift übernehmen."""
+    import re
+    parts = re.split(r"(\*\*.+?\*\*)", text)
+    for part in parts:
+        if part.startswith("**") and part.endswith("**") and len(part) > 4:
+            p.add_run(part[2:-2]).bold = True
+        elif part:
+            p.add_run(part)
+
+
+def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str = "Zusammenfassung",
+            fliesstext: bool = False) -> bytes:
     from docx import Document
-    from docx.shared import Pt
+    from docx.shared import Pt, RGBColor
 
     doc = Document()
     style = doc.styles["Normal"]
@@ -66,35 +90,53 @@ def to_docx(t: Transcript, protokoll_md: str | None = None) -> bytes:
 
     doc.add_heading(t.title, level=1)
     created = datetime.fromisoformat(t.created_at).strftime("%d.%m.%Y %H:%M") if t.created_at else ""
-    doc.add_paragraph(f"Aufgenommen: {created}   ·   Dauer: {fmt_time(t.duration)}   ·   Spracherkennung: {t.model}")
+    meta = doc.add_paragraph(f"Aufgenommen: {created}   ·   Dauer: {fmt_time(t.duration)}   ·   Spracherkennung: {t.model}")
+    meta.runs[0].font.size = Pt(9)
+    meta.runs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
 
-    if protokoll_md:
-        doc.add_heading("Protokoll", level=2)
-        for line in protokoll_md.splitlines():
-            line = line.rstrip()
-            if not line:
-                continue
-            if line.startswith("### "):
-                doc.add_heading(line[4:], level=4)
-            elif line.startswith("## "):
-                doc.add_heading(line[3:], level=3)
-            elif line.startswith("# "):
-                doc.add_heading(line[2:], level=2)
-            elif line.startswith(("- ", "* ")):
-                doc.add_paragraph(line[2:], style="List Bullet")
-            else:
-                doc.add_paragraph(line)
-        doc.add_page_break()
+    if fliesstext:
+        # Absätze je Sprecherwechsel, ohne Zeitmarken
+        cur_sp, buf = None, []
+        for s in t.segments:
+            if s.speaker != cur_sp and buf:
+                doc.add_paragraph(" ".join(buf))
+                buf = []
+            cur_sp = s.speaker
+            buf.append(s.clean or s.text)
+        if buf:
+            doc.add_paragraph(" ".join(buf))
+    else:
+        if protokoll_md:
+            doc.add_heading(protokoll_name, level=2)
+            note = doc.add_paragraph("Von der KI erstellt und automatisch gegen das Transkript geprüft. "
+                                     "Zeitangaben in eckigen Klammern verweisen auf die Stelle in der Aufnahme.")
+            note.runs[0].font.size = Pt(9)
+            note.runs[0].italic = True
+            for line in refs_to_times(protokoll_md, t).splitlines():
+                line = line.rstrip()
+                if not line:
+                    continue
+                if line.startswith("### "):
+                    doc.add_heading(line[4:], level=4)
+                elif line.startswith("## "):
+                    doc.add_heading(line[3:], level=3)
+                elif line.startswith("# "):
+                    doc.add_heading(line[2:], level=2)
+                elif line.startswith(("- ", "* ")):
+                    _md_inline(doc.add_paragraph(style="List Bullet"), line[2:])
+                else:
+                    _md_inline(doc.add_paragraph(), line)
+            doc.add_page_break()
 
-    doc.add_heading("Transkript", level=2)
-    for s in t.segments:
-        p = doc.add_paragraph()
-        r = p.add_run(f"[{fmt_time(s.start)}] ")
-        r.font.size = Pt(9)
-        if s.speaker:
-            r2 = p.add_run(f"{s.speaker}: ")
-            r2.bold = True
-        p.add_run(s.clean or s.text)
+        doc.add_heading("Transkript", level=2)
+        for s in t.segments:
+            p = doc.add_paragraph()
+            r = p.add_run(f"[{fmt_time(s.start)}] ")
+            r.font.size = Pt(9)
+            if s.speaker:
+                r2 = p.add_run(f"{s.speaker}: ")
+                r2.bold = True
+            p.add_run(s.clean or s.text)
 
     buf = io.BytesIO()
     doc.save(buf)

@@ -52,13 +52,16 @@
 <li>Besteht ein Satz die Prüfung nicht, bleibt das Original stehen und der Grund wird vermerkt. Original und bereinigte Fassung sind jederzeit umschaltbar.</li>
 </ul>
 
-<h2>Zusammenfassen &amp; strukturieren</h2>
+<h2>Protokoll erstellen</h2>
+<p>Ausgelegt auf ein kleines lokales Sprachmodell: Die KI schreibt nicht frei, sondern notiert nur – der Aufbau des Protokolls entsteht ohne KI. So kann sie keine Absätze „auffüllen“.</p>
 <ol>
-<li><b>Extraktion</b> (in Blöcken von ca. 9.000 Zeichen): Die KI zieht Bausteine heraus – Thema, Information, Beschluss, Aufgabe – jeweils mit Segmentnummer und <b>wörtlichem Zitat</b>.</li>
-<li><b>Zitatprüfung ohne KI</b>: Jedes Zitat wird unscharf mit dem genannten Segment verglichen (mindestens 60 %). Bausteine ohne passendes Zitat werden verworfen, bevor das Protokoll geschrieben wird.</li>
-<li><b>Schreiben</b>: Aus den geprüften Bausteinen entsteht das Protokoll im gewählten Stil (Zusammenfassung, Ergebnisprotokoll, Verlaufsprotokoll). Jede Zeile trägt Belege wie <code>[S12]</code>.</li>
-<li><b>Prüf-Durchlauf</b>: Zeilen ohne Beleg werden gelb, Belege auf nicht vorhandene Segmente rot markiert; angezeigt wird die Quote belegter Aussagen.</li>
+<li><b>Notieren</b> (in Abschnitten von ca. 5.000 Zeichen, mit Fortschrittsanzeige): Die KI schreibt Zeilen in einem festen Format – <code>THEMA</code>, <code>AUSSAGE</code>, <code>BESCHLUSS</code>, <code>AUFGABE</code>, <code>FRAGE</code> – jeweils mit Segmentnummer.</li>
+<li><b>Inhaltsprüfung ohne KI</b>: Jede Zeile wird mit dem genannten Segment und seinen Nachbarn verglichen. Mindestens die Hälfte der inhaltstragenden Wörter muss dort vorkommen. Stimmt nur die Nummer nicht, wird die passende Stelle im Abschnitt gesucht; steht der Inhalt nirgends, wird die Zeile verworfen und gezählt.</li>
+<li><b>Aufbau ohne KI</b>: Aus den geprüften Zeilen entsteht die gewählte Art – Zusammenfassung (Worum ging es, das Wichtigste, Entscheidungen, Aufgaben, offene Fragen), Ergebnisprotokoll (nach Themen gegliedert) oder Verlaufsprotokoll (chronologisch mit Zeitabschnitten und Sprechern). Findet die Prüfung gar nichts Belegbares, entsteht bewusst kein Protokoll.</li>
+<li><b>Zwischenspeicher</b>: Die geprüften Zeilen werden gespeichert. Ein Wechsel der Protokollart dauert deshalb nur einen Augenblick; erst wenn sich der Text ändert, wird neu ausgewertet.</li>
+<li><b>Prüf-Durchlauf</b>: Zeilen ohne Beleg, mit nicht vorhandenem Beleg oder mit inhaltlich kaum passendem Beleg werden markiert; angezeigt wird die Quote belegter Aussagen.</li>
 </ol>
+<p><b>Eigene Korrekturen haben Vorrang:</b> Von Hand korrigierte Sätze werden markiert und von der Bereinigung nicht mehr verändert. Ersetzte Wörter („Bini Kum“ → „Winnie Puuh“) gelten als verbindliche Schreibweise für den restlichen Text und werden nach der KI-Antwort noch einmal durchgesetzt.</p>
 <p>Ohne Sprachmodell (z. B. lokal auf einem PC) gibt es einen Ausweichweg: Anweisung kopieren, in ein anderes KI-System einfügen, Antwort zurückkopieren – die Prüfungen laufen dann genauso.</p>
 
 <h2>Sprachmodell</h2>

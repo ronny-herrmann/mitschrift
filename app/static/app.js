@@ -22,6 +22,11 @@
     const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (err ? ' err' : '');
     clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), err ? 6500 : 3200);
   };
+  const toastAction = (msg, label, fn) => {
+    const t = $('#toast'); t.innerHTML = `<span>${esc(msg)}</span><button class="toast-btn">${esc(label)}</button>`; t.className = 'toast show action';
+    $('.toast-btn', t).onclick = () => { t.className = 'toast'; fn(); };
+    clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), 12000);
+  };
   const api = async (path, opts = {}) => {
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }, ...opts });
     if (r.status === 401) { location.href = '/login'; throw new Error('Bitte anmelden'); }
@@ -126,29 +131,31 @@
     view.innerHTML = `
       <section class="rec-setup" id="setup">
         <h1>Neue Aufnahme</h1>
-        <p class="lead">Der Text erscheint, während gesprochen wird – grau vorläufig, schwarz sobald der Satz steht.</p>
         <div class="rec-fields">
-          <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung 10.5" autocomplete="off"></label>
+          <label>Titel<input id="r-title" type="text" placeholder="z. B. Dienstbesprechung" autocomplete="off"></label>
           <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
         </div>
+        <div class="field-hint">Ohne Titel wird Datum und Uhrzeit verwendet. Der Titel lässt sich jederzeit ändern – auch während der Aufnahme.</div>
         <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
         <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
         <div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div>
         <div class="rec-tips">
           <div><strong>Mikrofon nah dran</strong>Ein Konferenzmikrofon in der Tischmitte bringt mehr als jedes Modell.</div>
           <div><strong>Alles bleibt im Haus</strong>Audio und Text werden nur auf diesem Server verarbeitet.</div>
-          <div><strong>Nach dem Stopp</strong>Genauer Durchlauf, Sprechererkennung und KI-Bereinigung laufen im Hintergrund.</div>
+          <div><strong>Nach dem Stopp</strong>Genaue Erkennung, Sprechererkennung und KI-Bereinigung laufen automatisch im Hintergrund.</div>
         </div>
       </section>
       <section class="rec-live hidden" id="live">
-        <div class="rec-bar">
-          <div class="rec-state"><i></i><span>Aufnahme</span></div>
+        <div class="rec-bar" id="r-bar">
+          <div class="rec-state" id="r-state"><i></i><span>Aufnahme</span></div>
           <div class="rec-time" id="r-time">00:00</div>
           <canvas class="wave" id="r-wave"></canvas>
+          <button class="pause-btn" id="r-pause" aria-label="Aufnahme pausieren" title="Pause"><span></span></button>
           <button class="stop-btn" id="r-stop" aria-label="Aufnahme beenden" title="Aufnahme beenden"><span></span></button>
         </div>
         <div class="rec-sub"><span id="r-status">Hört zu …</span><span id="r-info"></span></div>
-        <div class="rec-title-live" id="r-title-live"></div>
+        <input class="rec-title-live" id="r-title-live" aria-label="Titel der Aufnahme" autocomplete="off">
+        <div id="r-done"></div>
         <div class="live-text" id="r-text"><p class="live-empty caret">Sprechen Sie – der Text erscheint hier</p></div>
       </section>`;
 
@@ -170,15 +177,17 @@
     document.addEventListener('health', updateStart);
     updateStart();
 
-    let ctx, node, analyser, stream, ws, t0, tick, raf, wakeLock = null, finished = false, lastLevels = [];
+    let ctx, node, analyser, stream, ws, tick, raf, wakeLock = null, finished = false, lastLevels = [];
+    let paused = false, elapsed = 0, runStart = 0, tid = null;
     const text = $('#r-text');
     const setStatus = (s) => { $('#r-status').textContent = s; };
     const nearBottom = () => window.innerHeight + window.scrollY > document.body.scrollHeight - 160;
     const follow = (was) => { if (was) window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' }); };
+    const seconds = () => elapsed + (paused || !runStart ? 0 : (Date.now() - runStart) / 1000);
 
     async function lockScreen() { try { wakeLock = await navigator.wakeLock?.request('screen'); } catch { } }
     const onVis = () => {
-      if (document.visibilityState === 'visible' && recordingActive) { lockScreen(); if (ctx && ctx.state === 'suspended') { ctx.resume(); toast('Die Aufnahme war im Hintergrund pausiert – bitte das Handy während der Aufnahme nicht sperren.', true); } }
+      if (document.visibilityState === 'visible' && recordingActive) { lockScreen(); if (ctx && ctx.state === 'suspended' && !paused) { ctx.resume(); toast('Die Aufnahme war im Hintergrund pausiert – bitte das Handy während der Aufnahme nicht sperren.', true); } }
     };
     document.addEventListener('visibilitychange', onVis);
 
@@ -189,9 +198,9 @@
       const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
       const buf = new Float32Array(analyser.fftSize); analyser.getFloatTimeDomainData(buf);
       let sum = 0; for (const v of buf) sum += v * v;
-      const lvl = Math.min(1, Math.sqrt(sum / buf.length) * 6);
+      const lvl = paused ? 0 : Math.min(1, Math.sqrt(sum / buf.length) * 6);
       lastLevels.push(lvl); const bars = Math.floor(w / 4); if (lastLevels.length > bars) lastLevels = lastLevels.slice(-bars);
-      g.fillStyle = '#0069FF';
+      g.fillStyle = paused ? '#9AA4B2' : '#0069FF';
       lastLevels.forEach((v, i) => { const bh = Math.max(2, v * (h - 4)); const x = w - (lastLevels.length - i) * 4; g.globalAlpha = 0.35 + 0.65 * (i / lastLevels.length); g.fillRect(x, (h - bh) / 2, 2.5, bh); });
       raf = requestAnimationFrame(drawWave);
     }
@@ -199,8 +208,9 @@
     let partialEl = null;
     function onMessage(m) {
       const was = nearBottom();
-      if (m.type === 'ready') { $('#r-info').textContent = m.ai_clean ? '✨ KI-Bereinigung live aktiv' : ''; }
+      if (m.type === 'ready') { tid = m.transcript_id; $('#r-info').textContent = m.ai_clean ? '✨ KI-Bereinigung live aktiv' : ''; }
       else if (m.type === 'partial') {
+        if (paused) return;
         $('.live-empty', text)?.remove();
         if (!partialEl) { partialEl = document.createElement('p'); text.appendChild(partialEl); }
         partialEl.innerHTML = `<span class="ts">${fmt(m.start)}</span><span class="partial">${esc(m.text)}</span>`;
@@ -219,6 +229,7 @@
         if (el) { el.textContent = m.text; el.classList.add('cleaned'); el.title = 'Von der KI bereinigt'; setTimeout(() => el.classList.remove('cleaned'), 1600); }
       }
       else if (m.type === 'status') {
+        if (paused) return;
         if (m.state === 'transcribing' && m.pending > 3) setStatus(`Server ausgelastet – ${m.pending} Sätze in der Warteschlange`);
         else if (recordingActive) setStatus('Hört zu …');
       }
@@ -235,7 +246,7 @@
       const src = ctx.createMediaStreamSource(stream);
       analyser = ctx.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
       node = new AudioWorkletNode(ctx, 'pcm16-processor'); src.connect(node);
-      const title = $('#r-title').value.trim();
+      const title = $('#r-title').value.trim() || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}`);
       ws.binaryType = 'arraybuffer';
@@ -243,12 +254,30 @@
       ws.onopen = () => { pending.forEach((b) => ws.send(b)); pending.length = 0; };
       ws.onmessage = (ev) => onMessage(JSON.parse(ev.data));
       ws.onclose = () => { if (recordingActive) { toast('Verbindung getrennt – die Aufnahme bis hierhin ist gespeichert.', true); stopLocal(); setStatus('Verbindung getrennt'); } };
-      node.port.onmessage = (ev) => { if (ws.readyState === 1) ws.send(ev.data.pcm); else if (ws.readyState === 0) pending.push(ev.data.pcm); };
-      recordingActive = true; finished = false;
+      node.port.onmessage = (ev) => { if (paused) return; if (ws.readyState === 1) ws.send(ev.data.pcm); else if (ws.readyState === 0) pending.push(ev.data.pcm); };
+      recordingActive = true; finished = false; paused = false; elapsed = 0; runStart = Date.now();
       $('#setup').classList.add('hidden'); $('#live').classList.remove('hidden');
-      $('#r-title-live').textContent = title || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-      t0 = Date.now(); tick = setInterval(() => ($('#r-time').textContent = fmt((Date.now() - t0) / 1000)), 250);
+      $('#r-title-live').value = title;
+      tick = setInterval(() => ($('#r-time').textContent = fmt(seconds())), 250);
       lockScreen(); drawWave();
+    }
+
+    function togglePause() {
+      if (!recordingActive) return;
+      const btn = $('#r-pause');
+      if (!paused) {
+        elapsed = seconds(); paused = true;
+        try { ws.send(JSON.stringify({ type: 'pause' })); } catch { }
+        partialEl?.remove(); partialEl = null;
+        btn.classList.add('resume'); btn.title = 'Weiter aufnehmen'; btn.setAttribute('aria-label', 'Weiter aufnehmen');
+        $('#r-state').classList.add('paused'); $('#r-state span').textContent = 'Pausiert';
+        setStatus('Pausiert – es wird nichts aufgenommen. Mit ▶ geht es weiter, mit ■ ist die Aufnahme beendet.');
+      } else {
+        paused = false; runStart = Date.now();
+        btn.classList.remove('resume'); btn.title = 'Pause'; btn.setAttribute('aria-label', 'Aufnahme pausieren');
+        $('#r-state').classList.remove('paused'); $('#r-state span').textContent = 'Aufnahme';
+        setStatus('Hört zu …');
+      }
     }
 
     function stopLocal() {
@@ -260,8 +289,9 @@
     }
 
     function stop() {
+      if (!recordingActive) return;
       setStatus('Wird gespeichert …');
-      $('#r-stop').disabled = true;
+      $('#r-stop').disabled = true; $('#r-pause').disabled = true;
       try { ws.send(JSON.stringify({ type: 'stop' })); } catch { }
       stopLocal();
       partialEl?.classList.add('hidden');
@@ -269,17 +299,35 @@
 
     function showDone(m) {
       if (finished) return; finished = true;
-      $('.rec-bar .rec-state').innerHTML = '<span style="color:var(--ok)">✓ Gespeichert</span>';
-      setStatus(m.refining ? 'Genauer Durchlauf, Sprechererkennung und Bereinigung laufen im Hintergrund.' : 'Fertig.');
-      const card = document.createElement('div'); card.className = 'card done-card';
-      card.innerHTML = `<div class="ico">${ICON.check}</div><div style="flex:1"><strong>${fmt(m.duration)} aufgenommen</strong><div class="muted small">${m.segments.length} Sätze${m.refining ? ' · wird gerade verfeinert (Sprecher, genaues Modell)' : ''}</div></div><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a>`;
-      text.after(card);
+      $('#r-bar').classList.add('done');
+      $('#r-state').innerHTML = '<span class="ok-txt">✓ Aufnahme beendet</span>';
+      $('#r-pause').remove(); $('#r-stop').remove(); $('#r-wave').remove();
+      setStatus(`${fmt(m.duration)} aufgenommen · ${m.segments.length} Sätze`);
+      $('#r-info').textContent = '';
+      $('#r-done').innerHTML = `
+        <div class="card done-card">
+          <div class="ico">${ICON.check}</div>
+          <div class="grow">
+            <strong>Die Aufnahme ist gespeichert.</strong>
+            <div class="muted small">${m.refining ? 'Jetzt laufen automatisch: genaue Erkennung → Sprecher → KI-Bereinigung. Sie können das Transkript sofort öffnen – es aktualisiert sich von selbst.' : 'Das Transkript ist fertig.'}</div>
+          </div>
+          <div class="done-actions"><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a></div>
+        </div>`;
       $('#r-new').addEventListener('click', (e) => { e.preventDefault(); route(); });
+      text.classList.add('finished');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
       try { ws.close(); } catch { }
       loadSide();
     }
 
+    // Titel auch während der Aufnahme änderbar
+    $('#r-title-live').addEventListener('change', async (e) => {
+      const v = e.target.value.trim(); if (!v || !tid) return;
+      try { await api(`/api/transcripts/${tid}`, { method: 'PATCH', body: JSON.stringify({ title: v }) }); toast('Titel gespeichert'); loadSide(); } catch (err) { toast(err.message, true); }
+    });
+    $('#r-title-live').addEventListener('keydown', (e) => { if (e.key === 'Enter') e.target.blur(); });
     startBtn.addEventListener('click', start);
+    $('#r-pause').addEventListener('click', togglePause);
     $('#r-stop').addEventListener('click', stop);
     return () => { document.removeEventListener('visibilitychange', onVis); document.removeEventListener('health', updateStart); if (recordingActive) stop(); cancelAnimationFrame(raf); };
   }
@@ -325,17 +373,18 @@
         const c = row.querySelector('.chip'), bar = row.querySelector('.bar i');
         if (t.status === 'done') { bar.style.width = '100%'; c.className = 'chip ok'; c.innerHTML = `<a href="#/t/${id}">fertig – öffnen</a>`; running.delete(id); loadSide(); }
         else if (t.status === 'error') { c.className = 'chip danger'; c.textContent = 'Fehler: ' + t.error; running.delete(id); }
-        else { const p = t.progress; c.textContent = progressText(p); if (p && p.done >= 0) bar.style.width = Math.round(100 * p.done / Math.max(1, p.total)) + '%'; }
+        else { const p = t.progress; c.textContent = progressText(p); bar.style.width = progressPct(p) + '%'; }
       }
     }, 1000);
     return () => clearInterval(poll);
   }
   function progressText(p) {
     if (!p) return 'wartet …';
-    if (p.done === -1) return 'Sprecher werden erkannt …';
-    if (p.done === -2) return 'KI bereinigt den Text …';
-    return `transkribiert … ${p.done}/${p.total}`;
+    if (p.done === -1) return 'Schritt 2 von 3: Sprecher werden erkannt …';
+    if (p.done === -2) return 'Schritt 3 von 3: KI bereinigt den Text …';
+    return `Schritt 1 von 3: genaue Erkennung … ${p.done}/${p.total} Abschnitte`;
   }
+  const progressPct = (p) => (!p ? 0 : p.done === -1 ? 70 : p.done === -2 ? 85 : Math.round(60 * p.done / Math.max(1, p.total)));
 
   // ================================================================ Liste (Handy)
   async function renderListe() {
@@ -412,18 +461,33 @@
   }
 
   // ================================================================ Detail
+  const STYLE_INFO = {
+    zusammenfassung: ['Zusammenfassung', 'Kurz: worum ging es, das Wichtigste, Entscheidungen, Aufgaben.'],
+    ergebnis: ['Ergebnisprotokoll', 'Nach Themen gegliedert: Ergebnisse, Beschlüsse, Aufgaben, offene Punkte.'],
+    verlauf: ['Verlaufsprotokoll', 'Chronologisch mit Zeitabschnitten: wer hat was gesagt.'],
+  };
   async function renderDetail(id) {
     let t = await api(`/api/transcripts/${id}`);
-    let showClean = true, mTab = 'tx', editMd = false, busy = '';
+    let showClean = true, mTab = 'tx', editMd = false, task = null, taskPoll = null;
 
     const speakerColor = () => { const m = new Map(); t.segments.forEach((s) => { if (s.speaker && !m.has(s.speaker)) m.set(s.speaker, COLORS[m.size % COLORS.length]); }); return m; };
     const hasClean = () => t.segments.some((s) => s.clean);
     const llm = () => health && health.llm_configured;
+    const working = () => t.status === 'processing' || t.status === 'refining';
+    const busy = () => task && task.status === 'running';
+
+    function taskBar() {
+      if (!busy()) return '';
+      const label = task.kind === 'bereinigen' ? 'KI bereinigt den Text' : `KI erstellt ${STYLE_INFO[task.style || 'zusammenfassung'][0]}`;
+      const pct = task.total ? Math.round(100 * task.done / task.total) : 3;
+      const step = task.total ? ` · Abschnitt ${Math.min(task.done + 1, task.total)} von ${task.total}` : ' · startet …';
+      return `<div class="progress-banner task"><span class="spin"></span><span>${label}${step} · ${fmt(task.elapsed || 0)}</span><div class="bar"><i style="width:${Math.max(3, pct)}%"></i></div></div>`;
+    }
 
     function draw() {
       const rtf = t.duration && t.processing_seconds ? t.duration / t.processing_seconds : 0;
       const speakers = new Set(t.segments.map((s) => s.speaker).filter(Boolean));
-      const working = t.status === 'processing' || t.status === 'refining';
+      const hasP = !!t.protokoll;
       view.innerHTML = `
         <div class="d-head">
           <input class="d-title" id="d-title" value="${esc(t.title)}" aria-label="Titel bearbeiten">
@@ -434,18 +498,19 @@
           <span class="chip">${fmtDate(t.created_at)}</span>
           <span class="chip">${fmt(t.duration)}</span>
           ${speakers.size ? `<span class="chip">${speakers.size} Sprecher</span>` : ''}
-          <span class="chip blue" title="Spracherkennung">${esc(t.model || '')}</span>
+          <span class="chip blue" title="Spracherkennung">Modell: ${esc(t.model || '–')}</span>
           ${rtf ? `<span class="chip ok" title="Rechenzeit ${t.processing_seconds} s">${rtf.toFixed(0)}× schneller als Echtzeit</span>` : ''}
           ${hasClean() ? '<span class="chip ai">✨ KI-bereinigt</span>' : ''}
           ${t.status === 'error' ? `<span class="chip danger">${esc(t.error)}</span>` : (t.error ? `<span class="chip warn" title="${esc(t.error)}">Hinweis</span>` : '')}
         </div>
-        ${working ? `<div class="progress-banner"><span class="spin"></span><span>${t.status === 'refining' ? 'Wird verfeinert: ' : ''}${progressText(t.progress)}</span><div class="bar"><i style="width:${t.progress && t.progress.done >= 0 ? Math.round(100 * t.progress.done / Math.max(1, t.progress.total)) : 100}%"></i></div></div>` : ''}
+        ${working() ? `<div class="progress-banner"><span class="spin"></span><span>${t.status === 'refining' ? 'Wird verfeinert – ' : ''}${progressText(t.progress)}</span><div class="bar"><i style="width:${progressPct(t.progress)}%"></i></div></div>` : ''}
+        ${taskBar()}
         <div class="ai-bar">
-          <button class="btn ai" id="ai-clean" ${busy || !t.segments.length ? 'disabled' : ''}>${busy === 'clean' ? '<span class="spin"></span>' : ICON.spark}Text bereinigen</button>
-          <button class="btn ai" id="ai-sum" ${busy || !t.segments.length ? 'disabled' : ''}>${busy === 'sum' ? '<span class="spin"></span>' : ICON.doc}Zusammenfassen &amp; strukturieren</button>
-          <span class="note">${llm() ? `KI: ${esc(health.llm_model)} · korrigiert nur, erfindet nichts` : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
+          <button class="btn ai" id="ai-clean" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.spark}${hasClean() ? 'Erneut bereinigen' : 'Text bereinigen'}</button>
+          <div class="menu"><button class="btn ai" id="ai-sum" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.doc}Protokoll erstellen ▾</button></div>
+          <span class="note">${llm() ? `KI: ${esc(health.llm_model)} · korrigiert nur, erfindet nichts · Ihre eigenen Korrekturen haben Vorrang` : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
         </div>
-        <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">Zusammenfassung</button></div></div>
+        <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">${hasP ? esc(STYLE_INFO[t.protokoll.style]?.[0] || 'Zusammenfassung') : 'Zusammenfassung'}</button></div></div>
         <div class="d-grid" data-tab="${mTab}">
           <section class="tx-pane">
             <div class="pane-head"><h2>Transkript</h2><span class="sp"></span>
@@ -475,7 +540,9 @@
           <div class="bhead"><span class="bname" data-spk="${esc(b.speaker)}" title="Namen ändern">${esc(b.speaker || 'Sprecher zuordnen')}</span><span class="btime" data-seek="${b.segs[0].start}">${fmt(b.segs[0].start)}</span></div>
           <div class="bbody">${b.segs.map((s) => {
             const useClean = showClean && s.clean;
-            const mk = useClean && s.clean !== s.text ? `<span class="mk ai" title="Original: ${esc(s.text)}">✨</span>` : (s.clean_note ? `<span class="mk warn" title="KI-Bereinigung verworfen: ${esc(s.clean_note)}">⚠</span>` : '');
+            const mk = s.edited ? '<span class="mk edit" title="Von Ihnen korrigiert – die KI ändert diesen Satz nicht mehr">✎</span>'
+              : useClean && s.clean !== s.text ? `<span class="mk ai" title="Original: ${esc(s.text)}">✨</span>`
+              : (s.clean_note ? `<span class="mk warn" title="KI-Bereinigung verworfen: ${esc(s.clean_note)}">⚠</span>` : '');
             return `<span class="seg" data-idx="${s.idx}" data-start="${s.start}" data-end="${s.end}"><span class="txt" contenteditable="true" spellcheck="true" data-field="${useClean ? 'clean' : 'text'}">${esc(useClean ? s.clean : s.text)}</span>${mk}</span>`;
           }).join('')}</div>
         </div>`;
@@ -483,46 +550,53 @@
     }
 
     function renderMd(zeilen) {
+      const tips = { unbelegt: 'Keine Belegstelle – bitte prüfen', ungueltig: 'Belegstelle gibt es nicht – bitte prüfen', schwach: 'Belegstelle passt inhaltlich kaum – bitte prüfen' };
       return zeilen.map((z) => {
         const raw = z.text.trim(); if (!raw) return '';
         const h = raw.match(/^(#{1,4})\s+(.*)$/);
         if (h) return `<h${h[1].length <= 2 ? 3 : 4}>${esc(h[2])}</h${h[1].length <= 2 ? 3 : 4}>`;
-        const li = /^[-*]\s+/.test(raw);
+        const li = /^[-*]\s+/.test(raw), num = /^\d+\.\s+/.test(raw);
         let html = esc(li ? raw.replace(/^[-*]\s+/, '') : raw);
-        html = html.replace(/\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, (ref) => [...ref.matchAll(/\d+/g)].map((x) => +x[0]).map((n) => `<span class="ref ${t.segments.some((s) => s.idx === n) ? '' : 'bad'}" data-ref="${n}" title="Zur Stelle springen">S${n}</span>`).join(''));
+        html = html.replace(/\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, (ref) => [...ref.matchAll(/\d+/g)].map((x) => +x[0]).map((n) => { const sg = t.segments.find((s) => s.idx === n); return `<span class="ref ${sg ? '' : 'bad'}" data-ref="${n}" title="Zur Stelle springen">${sg ? fmt(sg.start) : 'S' + n}</span>`; }).join(''));
         html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        return `<div class="pl ${li ? 'li' : ''} ${z.status}" ${z.status === 'unbelegt' ? 'title="Keine Belegstelle – bitte prüfen"' : ''}>${html}</div>`;
+        return `<div class="pl ${li || num ? 'li' : ''} ${num ? 'num' : ''} ${z.status}" ${tips[z.status] ? `title="${tips[z.status]}"` : ''}>${html}</div>`;
       }).join('');
+    }
+
+    function styleButtons(cur) {
+      return Object.entries(STYLE_INFO).map(([k, [name, desc]]) => `<button class="style-card ${k === cur ? 'on' : ''}" data-style="${k}" ${busy() || working() ? 'disabled' : ''}><strong>${name}</strong><span>${desc}</span></button>`).join('');
     }
 
     function drawNotes() {
       const p = t.protokoll;
-      const styles = (health && health.styles) || { zusammenfassung: 'Zusammenfassung', ergebnis: 'Ergebnisprotokoll', verlauf: 'Verlaufsprotokoll' };
-      const sel = `<select id="p-style" style="padding:.35rem .5rem;font-size:.85rem">${Object.entries(styles).map(([k, v]) => `<option value="${k}" ${p && p.style === k ? 'selected' : ''}>${v}</option>`).join('')}</select>`;
-      if (!p) return `<div class="pane-head"><h2>Zusammenfassung</h2><span class="sp"></span>${sel}</div><div class="card empty-notes"><div class="big">✨</div>Noch keine Zusammenfassung.<br>Klicke auf <strong>„Zusammenfassen &amp; strukturieren“</strong>. Jede Aussage bekommt eine Belegstelle im Transkript – nichts wird erfunden.</div>`;
-      const pr = p.content.pruefung || { zeilen: [], quote_belegt: 1, unbelegt: 0, ungueltige_belege: 0 };
-      return `<div class="pane-head"><h2>${esc(styles[p.style] || 'Zusammenfassung')}</h2><span class="sp"></span>${sel}</div>
+      if (!p) return `<div class="pane-head"><h2>Zusammenfassung</h2></div><div class="card empty-notes"><div class="big">✨</div>Noch keine Zusammenfassung. Welche Art soll entstehen?<div class="style-cards">${styleButtons('')}</div><div class="muted small">Jede Aussage bekommt eine Belegstelle im Transkript. Was dort nicht steht, wird verworfen.</div></div>`;
+      const pr = p.content.pruefung || { zeilen: [], quote_belegt: 1, unbelegt: 0, ungueltige_belege: 0, schwach_belegt: 0 };
+      const name = STYLE_INFO[p.style]?.[0] || 'Zusammenfassung';
+      return `<div class="pane-head"><h2>${esc(name)}</h2></div>
         <div class="card">
           <div class="pstats">
-            <span class="chip ${pr.quote_belegt >= 0.95 ? 'ok' : 'warn'}" title="Anteil der Aussagen mit gültiger Belegstelle">${Math.round(pr.quote_belegt * 100)} % belegt</span>
+            <span class="chip ${pr.quote_belegt >= 0.95 ? 'ok' : 'warn'}" title="Anteil der Aussagen mit passender Belegstelle">${Math.round(pr.quote_belegt * 100)} % belegt</span>
             ${pr.unbelegt ? `<span class="chip warn">${pr.unbelegt} ohne Beleg</span>` : ''}
             ${pr.ungueltige_belege ? `<span class="chip danger">${pr.ungueltige_belege} falscher Beleg</span>` : ''}
+            ${pr.schwach_belegt ? `<span class="chip warn" title="Die genannte Stelle passt inhaltlich kaum zur Aussage">${pr.schwach_belegt} schwach belegt</span>` : ''}
+            ${p.content.verworfen ? `<span class="chip" title="${esc((p.content.verworfen_beispiele || []).join(' · '))}">${p.content.verworfen} KI-Aussagen verworfen (nicht im Transkript)</span>` : ''}
             <span class="chip ${p.status === 'bestaetigt' ? 'ok' : ''}">${p.status === 'bestaetigt' ? '✓ geprüft' : 'Entwurf'}</span>
           </div>
           ${editMd ? `<textarea id="p-md" style="width:100%;min-height:320px;font-family:ui-monospace,Consolas,monospace;font-size:.85rem">${esc(p.content.protokoll_md)}</textarea>` : `<div class="prot">${renderMd(pr.zeilen)}</div>`}
-          <div style="display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.9rem">
-            ${editMd ? '<button class="btn primary sm" id="p-save">Speichern &amp; prüfen</button>' : '<button class="btn sm" id="p-edit">Bearbeiten</button>'}
+          <div class="p-actions">
+            ${editMd ? '<button class="btn primary sm" id="p-save">Speichern</button><button class="btn ghost sm" id="p-cancel">Abbrechen</button>' : '<button class="btn sm" id="p-edit">Bearbeiten</button>'}
             <button class="btn sm" id="p-confirm">${p.status === 'bestaetigt' ? 'Bestätigung aufheben' : ICON.check + 'Als geprüft markieren'}</button>
             <button class="btn ghost sm" id="p-copy">Kopieren</button>
           </div>
-        </div>`;
+        </div>
+        <div class="other-styles"><div class="muted small">Andere Protokollart erstellen:</div><div class="style-cards compact">${styleButtons(p.style)}</div></div>`;
     }
 
     // ---- Interaktion
     const audio = () => $('#audio');
     const seek = (sec) => { const a = audio(); if (!a) return; a.currentTime = Math.max(0, sec - 0.2); a.play().catch(() => { }); };
     const jump = (idx) => {
-      const s = t.segments.find((x) => x.idx === idx); if (!s) { toast(`Segment S${idx} gibt es nicht`, true); return; }
+      const s = t.segments.find((x) => x.idx === idx); if (!s) { toast(`Diese Stelle gibt es im Transkript nicht`, true); return; }
       if (mTab !== 'tx' && innerWidth <= 900) { mTab = 'tx'; draw(); }
       const el = $(`.seg[data-idx="${idx}"]`); if (el) { el.scrollIntoView({ block: 'center', behavior: 'smooth' }); el.classList.add('playing'); setTimeout(() => el.classList.remove('playing'), 2500); }
       seek(s.start);
@@ -530,20 +604,23 @@
 
     function bind() {
       $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); loadSide(); });
+      const ex = (q) => `/api/transcripts/${t.id}/export?${q}`;
       $('#d-export').addEventListener('click', (e) => openMenu(e.currentTarget, `
-        <a href="/api/transcripts/${t.id}/export?format=docx">Word (.docx)</a>
-        <a href="/api/transcripts/${t.id}/export?format=docx&protokoll=1">Word mit Zusammenfassung</a>
-        <a href="/api/transcripts/${t.id}/export?format=txt">Text mit Zeit &amp; Sprecher</a>
-        <a href="/api/transcripts/${t.id}/export?format=txt&zeit=false&sprecher=false">Nur Fließtext</a>
-        <a href="/api/transcripts/${t.id}/export?format=md">Markdown</a>
-        <a href="/api/transcripts/${t.id}/export?format=srt">Untertitel (.srt)</a>`));
+        <div class="menu-label">Word</div>
+        <a href="${ex('format=docx')}">Transkript (mit Zeit &amp; Sprecher)</a>
+        ${t.protokoll ? `<a href="${ex('format=docx&protokoll=1')}">Transkript und ${esc(STYLE_INFO[t.protokoll.style]?.[0] || 'Zusammenfassung')}</a>` : '<span class="disabled" title="Zuerst ein Protokoll erstellen">Transkript und Zusammenfassung</span>'}
+        <a href="${ex('format=fliesstext')}">Nur Fließtext</a><hr>
+        <div class="menu-label">Weitere Formate</div>
+        <a href="${ex('format=txt')}">Text mit Zeit &amp; Sprecher (.txt)</a>
+        <a href="${ex('format=md')}">Markdown (.md)</a>
+        <a href="${ex('format=srt')}">Untertitel (.srt)</a>`));
       $('#d-more').addEventListener('click', (e) => openMenu(e.currentTarget, `
         ${hasClean() ? '<button data-act="unclean">KI-Bereinigung verwerfen</button>' : ''}
         <button data-act="delaudio" ${t.has_audio ? '' : 'disabled'}>Nur Audio löschen</button><hr>
         <button data-act="delete" class="danger">Aufnahme endgültig löschen</button>`, async (act) => {
         if (act === 'delete') { if (!confirm('Transkript und Audio endgültig löschen?')) return; await api(`/api/transcripts/${t.id}`, { method: 'DELETE' }); toast('Gelöscht'); loadSide(); location.hash = '#/aufnahme'; }
         if (act === 'delaudio') { if (!confirm('Audio endgültig löschen? Das Transkript bleibt erhalten.')) return; await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw(); }
-        if (act === 'unclean') { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'DELETE' }); await reload(); toast('Bereinigung verworfen – Original wird angezeigt'); }
+        if (act === 'unclean') { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'DELETE' }); await reload(); toast('Bereinigung verworfen – Original wird angezeigt (Ihre eigenen Korrekturen bleiben)'); }
       }));
       $$('[data-mtab]').forEach((b) => b.addEventListener('click', () => { mTab = b.dataset.mtab; draw(); }));
       $$('[data-view]').forEach((b) => b.addEventListener('click', () => { showClean = b.dataset.view === 'clean'; draw(); }));
@@ -556,8 +633,18 @@
         el.addEventListener('blur', async () => {
           const val = el.textContent.trim(); if (val === el.dataset.orig) return;
           const idx = +el.parentElement.dataset.idx, field = el.dataset.field;
-          await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ [field]: val }) });
-          const s = t.segments.find((x) => x.idx === idx); s[field] = val; el.dataset.orig = val; toast('Gespeichert');
+          const r = await api(`/api/transcripts/${t.id}/segments/${idx}`, { method: 'PATCH', body: JSON.stringify({ [field]: val }) });
+          const s = t.segments.find((x) => x.idx === idx);
+          if (field === 'text') { s.text = val; if (s.clean) s.clean = val; } else s.clean = val;
+          s.edited = true; s.clean_note = ''; el.dataset.orig = val;
+          if (!el.parentElement.querySelector('.mk.edit')) { el.parentElement.querySelector('.mk')?.remove(); el.insertAdjacentHTML('afterend', '<span class="mk edit" title="Von Ihnen korrigiert – die KI ändert diesen Satz nicht mehr">✎</span>'); }
+          if (r.weitere_stellen && r.weitere_stellen.length) {
+            const k = r.korrekturen[0];
+            toastAction(`„${k.von}“ steht noch an ${r.weitere_stellen.length} weiteren Stelle${r.weitere_stellen.length > 1 ? 'n' : ''}.`, `Überall durch „${k.zu}“ ersetzen`, async () => {
+              const x = await api(`/api/transcripts/${t.id}/ersetzen`, { method: 'POST', body: JSON.stringify({ paare: r.korrekturen }) });
+              await reload(); toast(`${x.ersetzt} Stellen ersetzt`);
+            });
+          } else toast('Gespeichert – Ihre Korrektur hat Vorrang vor der KI');
         });
       });
       $$('.bname').forEach((el) => el.addEventListener('click', async () => {
@@ -574,11 +661,13 @@
         $$('.seg').forEach((el) => el.classList.toggle('playing', cur >= +el.dataset.start && cur < +el.dataset.end));
       };
       $('#ai-clean').addEventListener('click', aiClean);
-      $('#ai-sum').addEventListener('click', aiSum);
+      $('#ai-sum').addEventListener('click', (e) => openMenu(e.currentTarget, Object.entries(STYLE_INFO).map(([k, [n, d]]) => `<button data-act="${k}"><strong>${n}</strong><small>${d}</small></button>`).join(''), (st) => aiSum(st)));
+      $$('[data-style]').forEach((b) => b.addEventListener('click', () => aiSum(b.dataset.style)));
       $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); });
-      $('#p-save')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: $('#p-md').value }) }); editMd = false; draw(); });
+      $('#p-cancel')?.addEventListener('click', () => { editMd = false; draw(); });
+      $('#p-save')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: $('#p-md').value }) }); editMd = false; draw(); toast('Gespeichert'); });
       $('#p-confirm')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: t.protokoll.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt' }) }); draw(); });
-      $('#p-copy')?.addEventListener('click', async () => { if (await copy(t.protokoll.content.protokoll_md)) toast('Zusammenfassung kopiert'); });
+      $('#p-copy')?.addEventListener('click', async () => { if (await copy(t.protokoll.content.protokoll_md)) toast('Kopiert'); });
     }
 
     function openMenu(anchor, html, onAct) {
@@ -589,17 +678,39 @@
       if (onAct) m.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) { m.remove(); onAct(b.dataset.act); } });
     }
 
-    async function reload() { t = await api(`/api/transcripts/${id}`); draw(); }
+    async function reload() { const p = t.protokoll; t = await api(`/api/transcripts/${id}`); if (!t.protokoll) t.protokoll = p; draw(); }
 
-    // ---- KI: Bereinigen
+    // ---- KI-Aufgaben im Hintergrund mit Fortschritt
+    function watchTask(onDone) {
+      clearInterval(taskPoll);
+      taskPoll = setInterval(async () => {
+        let s; try { s = await api(`/api/transcripts/${t.id}/task`); } catch { return; }
+        task = { ...task, ...s };
+        if (s.status === 'running') { const bar = $('.progress-banner.task'); if (bar) bar.outerHTML = taskBar(); else draw(); return; }
+        clearInterval(taskPoll); taskPoll = null;
+        const done = task; task = null;
+        if (s.status === 'error') { draw(); toast(s.error, true); return; }
+        await onDone(done);
+      }, 800);
+    }
+
     async function aiClean() {
       if (llm()) {
-        busy = 'clean'; draw();
-        try {
-          const r = await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'POST' });
-          await reload(); showClean = true;
-          toast(`${r.uebernommen} Sätze bereinigt${r.verworfen ? ` · ${r.verworfen} verworfen (zu stark verändert – Original bleibt)` : ''}`);
-        } catch (e) { toast(e.message, true); } finally { busy = ''; draw(); }
+        if (hasClean()) {
+          const card = modal.open(`<h2>Text erneut bereinigen?</h2>
+            <p>Dieser Text wurde bereits von der KI bereinigt. Ein zweiter Durchlauf ändert meist nur Kleinigkeiten.</p>
+            <p class="muted">Sätze, die Sie selbst korrigiert haben (✎), bleiben unverändert – Ihre Korrekturen haben immer Vorrang.</p>
+            <div class="modal-actions"><button class="btn" id="m-x">Abbrechen</button><button class="btn primary" id="m-ok">Erneut bereinigen</button></div>`);
+          $('#m-x', card).onclick = modal.close;
+          await new Promise((res) => { $('#m-ok', card).onclick = () => { modal.close(); res(); }; });
+        }
+        try { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'POST' }); } catch (e) { toast(e.message, true); return; }
+        task = { kind: 'bereinigen', status: 'running', done: 0, total: 0, elapsed: 0 }; draw();
+        watchTask(async (done) => {
+          await reload(); showClean = true; draw();
+          const r = done.result || {};
+          toast(`${r.uebernommen ?? 0} Sätze bereinigt${r.verworfen ? ` · ${r.verworfen} verworfen (zu stark verändert – Original bleibt)` : ''}${r.eigene_korrekturen_behalten ? ` · ${r.eigene_korrekturen_behalten} eigene Korrekturen unverändert` : ''}`);
+        });
         return;
       }
       const prompt = await api(`/api/transcripts/${t.id}/bereinigen-prompt`);
@@ -622,18 +733,16 @@
       };
     }
 
-    // ---- KI: Zusammenfassen
-    async function aiSum() {
-      const style = ($('#p-style') && $('#p-style').value) || 'zusammenfassung';
+    async function aiSum(style = 'zusammenfassung') {
       if (llm()) {
-        busy = 'sum'; draw();
-        try { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); mTab = 'notes'; }
-        catch (e) { toast(e.message, true); } finally { busy = ''; draw(); }
+        try { await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); } catch (e) { toast(e.message, true); return; }
+        task = { kind: 'protokoll', style, status: 'running', done: 0, total: 0, elapsed: 0 }; mTab = 'notes'; draw();
+        watchTask(async () => { t = await api(`/api/transcripts/${id}`); mTab = 'notes'; editMd = false; draw(); toast(`${STYLE_INFO[style][0]} erstellt`); });
         return;
       }
       const prompt = await api(`/api/transcripts/${t.id}/nova-prompt?style=${style}`);
       const ok = await copy(prompt);
-      const card = modal.open(`<h2>Zusammenfassen &amp; strukturieren über NOVA</h2>
+      const card = modal.open(`<h2>${STYLE_INFO[style][0]} über NOVA</h2>
         <p class="muted">Jede Aussage muss eine Belegstelle wie [S12] tragen. Aussagen ohne Beleg werden danach gelb markiert – so fällt sofort auf, wenn die KI etwas hinzudichtet.</p>
         <div class="steps">
           <div class="step"><div><strong>${ok ? 'Anweisung und Transkript sind kopiert.' : 'Anweisung kopieren:'}</strong><br>In NOVA einfügen (Strg+V) und absenden.${ok ? '' : `<textarea readonly>${esc(prompt)}</textarea>`}</div></div>
@@ -649,18 +758,26 @@
     }
 
     draw();
+    // Läuft schon eine KI-Aufgabe (z. B. nach Neuladen der Seite)? Dann Fortschritt weiter anzeigen.
+    try {
+      const s = await api(`/api/transcripts/${id}/task`);
+      if (s.status === 'running') { task = s; draw(); watchTask(async () => { t = await api(`/api/transcripts/${id}`); draw(); }); }
+    } catch { }
     const poll = setInterval(async () => {
-      if (t.status !== 'processing' && t.status !== 'refining') return;
+      if (!working()) return;
       if (document.activeElement && (document.activeElement.isContentEditable || document.activeElement.tagName === 'TEXTAREA')) return;
       try {
         const n = await api(`/api/transcripts/${id}`);
         const changed = n.status !== t.status || JSON.stringify(n.progress) !== JSON.stringify(t.progress) || n.segments.length !== t.segments.length;
         const a = audio(), pos = a ? a.currentTime : 0, playing = a && !a.paused;
         t = n;
-        if (changed) { draw(); const b = audio(); if (b && pos) { b.currentTime = pos; if (playing) b.play().catch(() => { }); } if (n.status === 'done') { toast('Fertig verfeinert'); loadSide(); } }
+        if (changed) {
+          draw(); const b = audio(); if (b && pos) { b.currentTime = pos; if (playing) b.play().catch(() => { }); }
+          if (n.status === 'done') { toast(hasClean() ? 'Fertig: genaue Erkennung, Sprecher und KI-Bereinigung abgeschlossen' : 'Fertig verfeinert'); loadSide(); }
+        }
       } catch { }
     }, 2000);
-    return () => clearInterval(poll);
+    return () => { clearInterval(poll); clearInterval(taskPoll); };
   }
 
   // ================================================================ Start

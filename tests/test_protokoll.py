@@ -48,35 +48,64 @@ def test_prompt_contains_rules_and_segments():
 
 
 class FakeLLM(LLMClient):
-    def __init__(self):
+    """Liefert Zeilen im Extraktionsformat – eine davon frei erfunden."""
+
+    def __init__(self, antwort=None):
         super().__init__("http://fake", "", "fake-model")
         self.calls = 0
+        self.antwort = antwort
 
     def chat(self, system, user, temperature=0.0, json_mode=False):
         self.calls += 1
-        if json_mode:
-            return json.dumps({
-                "themen": ["Haushalt 2027"],
-                "bausteine": [
-                    {"id": "B1", "typ": "information", "thema": "Haushalt", "text": "Der Haushalt 2027 ist erster TOP.",
-                     "sprecher": "Vorsitz", "segment": 1, "zitat": "erste Tagesordnungspunkt ist der Haushalt 2027"},
-                    {"id": "B2", "typ": "beschluss", "thema": "Haushalt", "text": "Entwurf wird an den Gemeinderat weitergeleitet.",
-                     "sprecher": "Vorsitz", "segment": 2, "zitat": "den Haushaltsentwurf an den Gemeinderat weiterzuleiten"},
-                    {"id": "B3", "typ": "aufgabe", "thema": "Haushalt", "text": "Erfundene Aufgabe.",
-                     "sprecher": "", "segment": 3, "zitat": "Dieser Satz kommt im Transkript nicht vor, er ist erfunden."},
-                ]})
-        assert '"B3"' not in user, "verworfener Baustein darf nicht an Stufe 2 gehen"
-        return "## Ergebnisse\n- Der Haushalt 2027 ist erster TOP. [S1]\n## Beschlüsse\n- Entwurf wird an den Gemeinderat weitergeleitet. [S2]\n## Aufgaben\nkeine"
+        if self.antwort is not None:
+            return self.antwort
+        out = []
+        if "[S1 |" in user:
+            out += ["THEMA: Haushalt 2027 [S1]", "AUSSAGE: Der erste Tagesordnungspunkt ist der Haushalt 2027. [S1]"]
+        if "[S2 |" in user:
+            out.append("BESCHLUSS: Der Haushaltsentwurf wird an den Gemeinderat weitergeleitet. [S2]")
+        if "[S3 |" in user:
+            out.append("AUFGABE: Frau Müller übernimmt die Nachfrage bei der Kämmerei bis Freitag. [S7]")  # falsche Nummer
+            out.append("AUSSAGE: Die Personalplanung im Rahmen der Ressourcenhaushaltsplanung wird geprüft. [S3]")  # erfunden
+        return "\n".join(out)
 
 
 def test_create_protokoll_pipeline():
     llm = FakeLLM()
     c = create_protokoll(make_transcript(), "ergebnis", llm)
-    assert llm.calls == 2
-    assert c["bausteine_verworfen"] == 1
-    assert [b["beleg_ok"] for b in c["bausteine"]] == [True, True, False]
-    assert c["pruefung"]["unbelegt"] == 0 and c["pruefung"]["quote_belegt"] == 1.0
-    assert "[S2]" in c["protokoll_md"]
+    assert llm.calls == 1
+    md = c["protokoll_md"]
+    assert "Personalplanung" not in md, "erfundene Aussage muss verworfen werden"
+    assert c["verworfen"] == 1
+    assert "[S2]" in md and "## Beschlüsse" in md
+    assert "Frau Müller übernimmt" in md and "[S3]" in md, "falsche Nummer wird auf die passende Stelle korrigiert"
+    assert c["pruefung"]["unbelegt"] == 0 and c["pruefung"]["ungueltige_belege"] == 0
+
+
+def test_styles_differ_and_cache_skips_llm():
+    t = make_transcript()
+    llm = FakeLLM()
+    first = create_protokoll(t, "zusammenfassung", llm)
+    assert "## Worum ging es" in first["protokoll_md"] and "## Das Wichtigste" in first["protokoll_md"]
+    again = create_protokoll(t, "verlauf", None, cache=first["extrakt"])
+    assert llm.calls == 1, "Wechsel der Protokollart braucht keine neue KI-Anfrage"
+    assert "**Vorsitz:**" in again["protokoll_md"] and "00:00 – " in again["protokoll_md"]
+    t.segments[0].clean = "Geändert"
+    create_protokoll(t, "ergebnis", llm, cache=first["extrakt"])
+    assert llm.calls == 2, "geänderter Text → neue Auswertung"
+
+
+def test_everything_invented_gives_no_protokoll():
+    llm = FakeLLM(antwort="THEMA: Rahmenbedingungen der Personalplanung [S1]\nAUSSAGE: Die Ressourcenhaushaltsplanung wird geprüft. [S2]")
+    import pytest
+    with pytest.raises(ValueError, match="nichts erfunden"):
+        create_protokoll(make_transcript(), "zusammenfassung", llm)
+
+
+def test_support():
+    from app.protokoll import support
+    assert support("Frau Müller übernimmt die Nachfrage bei der Kämmerei", "Frau Müller übernimmt die Nachfrage bei der Kämmerei bis Freitag.") == 1.0
+    assert support("Personalplanung und Ressourcenhaushalt", "Winnie Puuh seufzte und ging nach Hause.") == 0.0
 
 
 def test_bereinigt():
@@ -130,5 +159,32 @@ def test_clean_segments_with_fake_llm():
 def test_create_protokoll_in_blocks():
     llm = FakeLLM()
     c = create_protokoll(make_transcript(), "ergebnis", llm, max_chars=120)
-    assert llm.calls >= 3  # mehrere Extraktionsblöcke + Schreiben
-    assert [b["id"] for b in c["bausteine"]] == [f"B{i}" for i in range(1, len(c["bausteine"]) + 1)]
+    assert llm.calls >= 3  # mehrere Abschnitte
+    assert len(c["extrakt"]["abschnitte"]) == llm.calls
+
+
+def test_korrektur_paare_und_weitere_stellen():
+    assert bereinigung.korrektur_paare("und dann Bini Kum seufzte", "und dann Winnie Puuh seufzte") == [{"von": "Bini Kum", "zu": "Winnie Puuh"}]
+    assert bereinigung.korrektur_paare("gleich", "Gleich") == []
+    segs = [Segment(0, 0, 1, "Bini Kum seufzte"), Segment(1, 1, 2, "Wo ist bini kum?"), Segment(2, 2, 3, "Nichts")]
+    assert bereinigung.weitere_stellen(segs, [{"von": "Bini Kum", "zu": "Winnie Puuh"}], 0) == [1]
+
+
+def test_edited_segments_are_not_sent_and_corrections_win():
+    t = make_transcript()
+    t.segments[1].edited = True
+    seen = []
+
+    class LLM(LLMClient):
+        def __init__(self):
+            super().__init__("http://fake", "", "fake")
+
+        def chat(self, system, user, temperature=0.0, json_mode=False):
+            zeilen = user.split("ZEILEN:\n", 1)[1]
+            seen.append(zeilen)
+            return zeilen.replace("Kämmerei", "Bini Kum")
+
+    kor = [{"von": "Bini Kum", "zu": "Kämmerei"}]
+    out = bereinigung.clean_segments(LLM(), t.segments, [], korrekturen=kor)
+    assert "[S1]" not in seen[0] and 1 not in out
+    assert out[3].endswith("Kämmerei bis Freitag."), "Korrektur der Nutzer setzt sich gegen die KI durch"

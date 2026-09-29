@@ -85,7 +85,7 @@ Code-Übersicht:
 | `app/vad.py` | Silero VAD + Segment-Zustandsautomat (live und offline identisch) |
 | `app/asr/` | Backends `parakeet.py`, `whisper.py`, `fake.py` hinter einer Schnittstelle |
 | `app/pipeline.py` | Datei → Segmente → Modell (Batch) → Segmente mit Wort-Zeitstempeln |
-| `app/protokoll.py` | Prompt-Bau, zweistufige KI-Pipeline, Belegprüfung, Zitatabgleich |
+| `app/protokoll.py` | Prompt-Bau, KI-Notizen mit Inhaltsprüfung, Aufbau je Protokollart, Belegprüfung |
 | `app/store.py` | SQLite (Transkripte, Segmente, Protokolle, Glossar) |
 | `app/export.py` | TXT/MD/SRT/DOCX |
 | `app/static/` | Oberfläche (reines HTML/JS/CSS, keine externen Dienste, PWA) |

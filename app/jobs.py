@@ -115,7 +115,8 @@ class JobQueue:
         if llm is not None and segments:
             self._progress[tid] = (-2, 0)  # Anzeige: „KI bereinigt“
             try:
-                cleaned = bereinigung.clean_segments(llm, segments, self.transcriber.glossar_entries())
+                cleaned = bereinigung.clean_segments(llm, segments, self.transcriber.glossar_entries(),
+                                                     korrekturen=self.store.get_setting(f"korrekturen:{tid}", []))
                 changes, _, _ = bereinigung.apply_cleaned(segments, cleaned)
                 by_idx = {c["idx"]: c for c in changes}
                 for seg in segments:

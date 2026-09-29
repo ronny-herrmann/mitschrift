@@ -70,6 +70,12 @@ def page(server):
         browser.close()
 
 
+def _shot(page, name):
+    d = os.environ.get("SCREENSHOT_DIR")
+    if d:
+        page.screenshot(path=f"{d}/{name}.png", full_page=False)
+
+
 def test_live_recording_in_browser(page, server):
     page.goto(server + "/#/aufnahme")
     page.wait_for_selector("#r-start")
@@ -81,12 +87,31 @@ def test_live_recording_in_browser(page, server):
     page.wait_for_selector("#r-text .fin", timeout=20_000)
     page.wait_for_timeout(5000)
     assert page.locator("#r-text .fin").count() >= 2
+    page.click("#r-pause")
+    page.wait_for_selector("#r-state.paused")
+    assert "Pausiert" in page.inner_text("#r-state")
+    t1 = page.inner_text("#r-time")
+    page.wait_for_timeout(1500)
+    assert page.inner_text("#r-time") == t1, "Zeit steht während der Pause"
+    _shot(page, "aufnahme_pause")
+    page.click("#r-pause")
+    page.wait_for_timeout(800)
+    page.fill("#r-title-live", "E2E Live umbenannt")
+    page.press("#r-title-live", "Enter")
     page.click("#r-stop")
     page.wait_for_selector(".done-card", timeout=30_000)
+    _shot(page, "aufnahme_fertig")
     page.click(".done-card .btn.primary")
     page.wait_for_selector(".block")
     assert page.locator(".seg").count() >= 2
     assert page.locator("#audio").count() == 1
+    assert page.input_value("#d-title") == "E2E Live umbenannt"
+    _shot(page, "detail")
+    page.click("[data-mtab=notes]") if page.is_visible("[data-mtab=notes]") else None
+    _shot(page, "detail_notes")
+    page.click("#d-export")
+    _shot(page, "export_menu")
+    page.keyboard.press("Escape")
     assert not [e for e in page.errors if "favicon" not in e], page.errors
 
 
@@ -112,10 +137,13 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.locator(".bname").first.click()
     page.wait_for_selector("text=Frau Müller")
 
-    # Zusammenfassen ohne KI → NOVA-Dialog
+    assert page.locator(".seg .mk.edit").count() == 1, "eigene Korrektur wird markiert"
+
+    # Protokoll ohne KI → Art wählen → NOVA-Dialog
     page.click("#ai-sum")
+    page.click(".menu-list [data-act=ergebnis]")
     page.wait_for_selector("#m-in")
-    page.fill("#m-in", "## Ergebnisse\n- Sitzung eröffnet. [S0]\n- Ohne Beleg.\n## Beschlüsse\nkeine")
+    page.fill("#m-in", "## Ergebnisse\n- Korrigiert per UI. [S0]\n- Ohne Beleg.\n## Beschlüsse\nkeine")
     page.click("#m-ok")
     page.wait_for_selector(".prot .pl")
     assert page.locator(".prot .pl.unbelegt").count() == 1
@@ -128,7 +156,9 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.fill("#m-in", "[S0] Korrigiert per UI.\n[S1] Der Stadtrat hat 12 Millionen für ein neues Stadion beschlossen und alles vertagt.")
     page.click("#m-ok")
     page.wait_for_selector(".seg .mk.warn")
-    assert page.locator("[data-view=clean]").count() == 1
+    # Die eigene Korrektur (S0) wird von der Bereinigung nicht angefasst
+    assert page.inner_text(".seg .txt >> nth=0").strip() == "Korrigiert per UI"
+    assert page.locator(".seg .mk.edit").count() == 1
 
     page.goto(server + "/#/transkripte")
     page.wait_for_selector(".item")

@@ -27,20 +27,37 @@ SYSTEM = (
 
 RULES = """Regeln:
 - Jede Zeile beginnt mit ihrer Nummer, z. B. [S12]. Gib GENAU die gleichen Zeilen mit den gleichen Nummern in gleicher Reihenfolge zurück – eine Zeile pro Nummer.
-- Korrigiere: falsch erkannte Wörter (wenn der Zusammenhang eindeutig ist), Rechtschreibung, Zeichensetzung, Groß-/Kleinschreibung, Zahlen und Datumsangaben in üblicher Schreibweise.
+- Korrigiere: falsch erkannte Wörter, Rechtschreibung, Zeichensetzung, Groß-/Kleinschreibung, Zahlen und Datumsangaben in üblicher Schreibweise.
+- Englische oder sinnlose Wörter mitten in einem deutschen Satz sind fast immer Erkennungsfehler. Ersetze sie durch das deutsche Wort, das nach Klang und Zusammenhang gemeint ist.
 - Entferne: Verzögerungslaute (äh, ähm, hm), direkte Wortwiederholungen und Stotterer.
 - Verboten: zusammenfassen, umformulieren, Sätze umstellen, Inhalte ergänzen oder weglassen, Namen/Zahlen erfinden.
+- Vorgegebene Schreibweisen (Glossar und Korrekturen der Nutzer) sind verbindlich und haben Vorrang vor deinem Sprachgefühl.
 - Wenn eine Stelle unklar ist: unverändert lassen.
-- Nur die Zeilen ausgeben, keine Erklärungen."""
+- Nur die Zeilen ausgeben, keine Erklärungen.
+
+Beispiele:
+[S1] ähm ja also wir haben die tabelle im CHS äh gepflegt
+→ [S1] Ja, also wir haben die Tabelle im Excel gepflegt.
+[S2] wir treffen uns am dritten zehnten um zehn uhr in der in der kämmerei
+→ [S2] Wir treffen uns am 3.10. um 10 Uhr in der Kämmerei.
+[S3] wir sehen uns dann nächste week im bürger meister amt
+→ [S3] Wir sehen uns dann nächste Woche im Bürgermeisteramt.
+[S4] das müssen wir bis frei tag mit dem amt klären
+→ [S4] Das müssen wir bis Freitag mit dem Amt klären."""
 
 
-def glossar_hint(glossar: list[dict]) -> str:
+def glossar_hint(glossar: list[dict], korrekturen: list[dict] | None = None) -> str:
     terms = [e["zu"] for e in glossar or [] if e.get("zu")]
     pairs = [f"{e['von']} → {e['zu']}" for e in glossar or [] if e.get("von") and e.get("zu")]
-    if not terms:
-        return ""
-    return ("Fachbegriffe und Namen, die richtig geschrieben werden müssen: " + ", ".join(dict.fromkeys(terms))
-            + ("\nBekannte Fehlerkennungen: " + "; ".join(pairs) if pairs else "") + "\n")
+    user = [f"{k['von']} → {k['zu']}" for k in korrekturen or [] if k.get("von") and k.get("zu")]
+    out = ""
+    if terms:
+        out += "Fachbegriffe und Namen, die richtig geschrieben werden müssen: " + ", ".join(dict.fromkeys(terms)) + "\n"
+    if pairs:
+        out += "Bekannte Fehlerkennungen: " + "; ".join(pairs) + "\n"
+    if user:
+        out += "Von den Nutzern korrigiert (verbindlich, genau so schreiben): " + "; ".join(user) + "\n"
+    return out
 
 
 def seg_text(s: Segment) -> str:
@@ -51,10 +68,11 @@ def build_lines(segments: list[Segment]) -> str:
     return "\n".join(f"[S{s.idx}] {seg_text(s)}" for s in segments)
 
 
-def build_prompt(t: Transcript, glossar: list[dict]) -> str:
-    """Vollständiger Prompt für NOVA (Zwischenablage)."""
-    return (f"Bereinige das folgende Transkript.\n\n{RULES}\n\n{glossar_hint(glossar)}\n"
-            f"TRANSKRIPT:\n{build_lines(t.segments)}\n")
+def build_prompt(t: Transcript, glossar: list[dict], korrekturen: list[dict] | None = None) -> str:
+    """Vollständiger Prompt für NOVA (Zwischenablage). Von Hand korrigierte Zeilen bleiben außen vor."""
+    segs = [s for s in t.segments if not s.edited]
+    return (f"Bereinige das folgende Transkript.\n\n{RULES}\n\n{glossar_hint(glossar, korrekturen)}\n"
+            f"TRANSKRIPT:\n{build_lines(segs)}\n")
 
 
 _LINE = re.compile(r"^\s*\[\s*S\s*(\d+)\s*\]\s*(.*)$")
@@ -134,17 +152,73 @@ def chunks(segments: list[Segment], max_chars: int = 3500) -> list[list[Segment]
     return out
 
 
-def clean_segments(llm, segments: list[Segment], glossar: list[dict], context: list[Segment] | None = None) -> dict[int, str]:
-    """Bereinigt eine Liste von Segmenten per KI (in Blöcken). → {idx: bereinigter Text}"""
+def apply_korrekturen(text: str, korrekturen: list[dict] | None) -> str:
+    """Korrekturen der Nutzer wortgenau durchsetzen – die KI darf sie nicht zurückdrehen."""
+    if not korrekturen:
+        return text
+    from .glossar import apply_glossar, compile_glossar
+    return apply_glossar(text, compile_glossar(korrekturen))
+
+
+def clean_segments(llm, segments: list[Segment], glossar: list[dict], context: list[Segment] | None = None,
+                   korrekturen: list[dict] | None = None, progress=None) -> dict[int, str]:
+    """Bereinigt eine Liste von Segmenten per KI (in Blöcken). → {idx: bereinigter Text}
+
+    Von Hand korrigierte Segmente (edited) werden nicht geschickt, dienen aber als Zusammenhang."""
     result: dict[int, str] = {}
     prev = list(context or [])
-    for block in chunks(segments):
+    todo = [s for s in segments if not s.edited]
+    blocks = chunks(todo)
+    if progress:
+        progress(0, len(blocks))
+    for i, block in enumerate(blocks, 1):
         ctx = ""
         if prev:
             ctx = "Vorheriger Zusammenhang (nicht ausgeben, nur zum Verständnis):\n" + \
-                  "\n".join(s.text for s in prev[-3:]) + "\n\n"
-        user = f"{RULES}\n\n{glossar_hint(glossar)}\n{ctx}ZEILEN:\n{build_lines(block)}"
+                  "\n".join((s.clean or s.text) for s in prev[-3:]) + "\n\n"
+        user = f"{RULES}\n\n{glossar_hint(glossar, korrekturen)}\n{ctx}ZEILEN:\n{build_lines(block)}"
         answer = llm.chat(SYSTEM, user, temperature=0.0)
-        result.update(parse_lines(answer))
+        for idx, txt in parse_lines(answer).items():
+            result[idx] = apply_korrekturen(txt, korrekturen)
         prev = block
+        if progress:
+            progress(i, len(blocks))
     return result
+
+
+# ---------------------------------------------------------------------------
+# Korrekturen der Nutzer erkennen (für „an weiteren Stellen ersetzen“ und als Vorgabe für die KI)
+# ---------------------------------------------------------------------------
+_TOK = re.compile(r"[\w\-]+", re.UNICODE)
+
+
+def korrektur_paare(alt: str, neu: str) -> list[dict]:
+    """Welche Wörter wurden ersetzt? „Bini Kum seufzte“ → „Winnie Puuh seufzte“ ⇒ [{von: Bini Kum, zu: Winnie Puuh}]"""
+    a, b = _TOK.findall(alt), _TOK.findall(neu)
+    out = []
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, [w.lower() for w in a], [w.lower() for w in b]).get_opcodes():
+        if op != "replace":
+            continue
+        von, zu = " ".join(a[i1:i2]), " ".join(b[j1:j2])
+        if not (1 <= i2 - i1 <= 4 and 1 <= j2 - j1 <= 4):
+            continue
+        if von.lower() == zu.lower() or len(von) < 2 or von.isdigit():
+            continue
+        out.append({"von": von, "zu": zu})
+    return out
+
+
+def weitere_stellen(segments: list[Segment], paare: list[dict], ausser: int) -> list[int]:
+    """Segmente, in denen eine korrigierte Schreibweise noch in der alten Form vorkommt."""
+    if not paare:
+        return []
+    from .glossar import compile_glossar
+    rules = compile_glossar(paare)
+    hits = []
+    for s in segments:
+        if s.idx == ausser:
+            continue
+        cur = s.clean or s.text
+        if any(p.search(cur) for p, _ in rules):
+            hits.append(s.idx)
+    return hits

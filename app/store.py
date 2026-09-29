@@ -33,6 +33,7 @@ class Segment:
     words: list[dict] = field(default_factory=list)  # [{"w":..., "s":..., "e":...}]
     clean: str = ""       # KI-bereinigter Text (leer = nicht bereinigt)
     clean_note: str = ""  # Grund, falls die Bereinigung verworfen wurde
+    edited: bool = False  # von Hand korrigiert → hat Vorrang, wird von der KI nicht mehr angefasst
 
 
 @dataclass
@@ -86,6 +87,7 @@ CREATE TABLE IF NOT EXISTS segments (
     words TEXT DEFAULT '[]',
     clean TEXT DEFAULT '',
     clean_note TEXT DEFAULT '',
+    edited INTEGER DEFAULT 0,
     PRIMARY KEY (transcript_id, idx)
 );
 CREATE TABLE IF NOT EXISTS protokolle (
@@ -118,6 +120,8 @@ class Store:
             for col in ("clean", "clean_note"):
                 if col not in cols:
                     c.execute(f"ALTER TABLE segments ADD COLUMN {col} TEXT DEFAULT ''")
+            if "edited" not in cols:
+                c.execute("ALTER TABLE segments ADD COLUMN edited INTEGER DEFAULT 0")
 
     @contextmanager
     def _tx(self):
@@ -152,18 +156,19 @@ class Store:
         with self._tx() as c:
             c.execute("DELETE FROM segments WHERE transcript_id=?", (tid,))
             c.executemany(
-                "INSERT INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note,edited)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 [(tid, s.idx, s.start, s.end, s.text, s.speaker, json.dumps(s.words, ensure_ascii=False), s.clean,
-                  s.clean_note) for s in segments],
+                  s.clean_note, int(s.edited)) for s in segments],
             )
 
     def append_segment(self, tid: str, seg: Segment) -> None:
         with self._tx() as c:
             c.execute(
-                "INSERT OR REPLACE INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note)"
-                " VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO segments (transcript_id,idx,start,end,text,speaker,words,clean,clean_note,edited)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (tid, seg.idx, seg.start, seg.end, seg.text, seg.speaker, json.dumps(seg.words, ensure_ascii=False),
-                 seg.clean, seg.clean_note),
+                 seg.clean, seg.clean_note, int(seg.edited)),
             )
 
     def update_segment(self, tid: str, idx: int, **fields) -> bool:
@@ -171,6 +176,8 @@ class Store:
             return False
         if "words" in fields:
             fields["words"] = json.dumps(fields["words"], ensure_ascii=False)
+        if "edited" in fields:
+            fields["edited"] = int(bool(fields["edited"]))
         cols = ", ".join(f"{k}=?" for k in fields)
         with self._tx() as c:
             cur = c.execute(f"UPDATE segments SET {cols} WHERE transcript_id=? AND idx=?", (*fields.values(), tid, idx))
@@ -192,7 +199,8 @@ class Store:
         t = self._row_to_transcript(row)
         t.segments = [
             Segment(idx=s["idx"], start=s["start"], end=s["end"], text=s["text"], speaker=s["speaker"] or "",
-                    words=json.loads(s["words"] or "[]"), clean=s["clean"] or "", clean_note=s["clean_note"] or "")
+                    words=json.loads(s["words"] or "[]"), clean=s["clean"] or "", clean_note=s["clean_note"] or "",
+                    edited=bool(s["edited"]))
             for s in segs
         ]
         return t
@@ -212,6 +220,7 @@ class Store:
             c.execute("DELETE FROM segments WHERE transcript_id=?", (tid,))
             c.execute("DELETE FROM protokolle WHERE transcript_id=?", (tid,))
             c.execute("DELETE FROM transcripts WHERE id=?", (tid,))
+            c.execute("DELETE FROM settings WHERE key LIKE ?", (f"%:{tid}",))
         if t.audio_path:
             p = Path(t.audio_path)
             if p.exists():

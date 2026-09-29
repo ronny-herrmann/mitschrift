@@ -78,7 +78,8 @@ def test_upload_flow(client):
     p = r.json()["content"]["pruefung"]
     assert p["zeilen_inhalt"] == 3 and p["unbelegt"] == 1 and p["ungueltige_belege"] == 1
     statuses = [z["status"] for z in p["zeilen"] if not z["heading"] and z["text"].strip()]
-    assert statuses == ["ok", "unbelegt", "ok", "ungueltig"] or statuses[:2] == ["ok", "unbelegt"]
+    # Der Testtext der Fake-Spracherkennung enthält nichts zum Haushalt → Beleg formal gültig, inhaltlich schwach
+    assert statuses[:2] == ["schwach", "unbelegt"] and statuses[-1] == "ungueltig"
 
     # Bestätigen
     r = client.patch(f"/api/transcripts/{tid}/protokoll", json={"status": "bestaetigt"})
@@ -214,3 +215,71 @@ def test_docs_endpoint(client):
     assert client.get("/api/docs/../main").status_code == 404
     assert client.get("/api/docs/unbekannt").status_code == 404
     assert "script-src 'self'" in r.headers["content-security-policy"]
+
+
+def _upload(client, title="Korrekturtest"):
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": title}).json()["id"]
+    wait_done(client, tid)
+    return tid
+
+
+def test_correction_priority_and_replace_elsewhere(client):
+    tid = _upload(client)
+    client.patch(f"/api/transcripts/{tid}/segments/1", json={"text": "Bini Kum seufzte"})
+    client.patch(f"/api/transcripts/{tid}/segments/2", json={"text": "Wo ist Bini Kum?"})
+    r = client.patch(f"/api/transcripts/{tid}/segments/1", json={"text": "Winnie Puuh seufzte"}).json()
+    assert r["korrekturen"] == [{"von": "Bini Kum", "zu": "Winnie Puuh"}]
+    assert r["weitere_stellen"] == [2]
+    assert client.post(f"/api/transcripts/{tid}/ersetzen", json={"paare": r["korrekturen"]}).json()["ersetzt"] == 1
+    d = client.get(f"/api/transcripts/{tid}").json()
+    assert d["segments"][2]["text"] == "Wo ist Winnie Puuh?" and d["segments"][1]["edited"] and d["segments"][2]["edited"]
+    assert "Winnie Puuh" in client.get(f"/api/transcripts/{tid}/bereinigen-prompt").text
+
+
+def test_export_names_and_fliesstext(client):
+    tid = _upload(client, "Test RH")
+    r = client.get(f"/api/transcripts/{tid}/export?format=fliesstext")
+    assert r.status_code == 200 and r.content[:2] == b"PK"
+    assert 'filename="Test RH - Fliesstext.docx"' in r.headers["content-disposition"]
+    r = client.get(f"/api/transcripts/{tid}/export?format=md")
+    assert "Test%20RH%20-%20Markdown.md" in r.headers["content-disposition"]
+    assert client.get(f"/api/transcripts/{tid}/export?format=docx&protokoll=1").status_code == 404
+
+
+def test_ai_tasks_run_in_background(client, monkeypatch):
+    import time as _t
+    from app import main
+    from app.protokoll import LLMClient
+
+    class LLM(LLMClient):
+        def __init__(self):
+            super().__init__("http://fake", "", "fake")
+
+        def chat(self, system, user, temperature=0.0, json_mode=False):
+            if "ZEILEN:\n" in user:
+                return user.split("ZEILEN:\n", 1)[1]
+            nums = __import__("re").findall(r"\[S(\d+) \|[^\]]*\] (.*)", user)
+            return "\n".join(f"AUSSAGE: {txt.strip('[]')} [S{n}]" for n, txt in nums) + "\nAUSSAGE: Erfundener Haushaltsbeschluss [S0]"
+
+    monkeypatch.setattr(main, "get_llm", lambda: LLM())
+    monkeypatch.setattr(main.settings, "llm_base_url", "http://fake")
+    monkeypatch.setattr(main.settings, "llm_model", "fake")
+    tid = _upload(client)
+
+    def wait(tid):
+        for _ in range(100):
+            s = client.get(f"/api/transcripts/{tid}/task").json()
+            if s["status"] != "running":
+                return s
+            _t.sleep(0.05)
+        raise AssertionError("Aufgabe hängt")
+
+    assert client.post(f"/api/transcripts/{tid}/bereinigen").json()["started"]
+    s = wait(tid)
+    assert s["status"] == "done" and s["result"]["uebernommen"] == 3 and s["total"] >= 1
+    assert client.post(f"/api/transcripts/{tid}/protokoll", json={"style": "verlauf"}).json()["started"]
+    assert wait(tid)["status"] == "done"
+    p = client.get(f"/api/transcripts/{tid}").json()["protokoll"]
+    assert p["style"] == "verlauf" and "Erfundener" not in p["content"]["protokoll_md"]
+    assert p["content"]["verworfen"] == 1
