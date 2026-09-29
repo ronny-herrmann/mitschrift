@@ -248,9 +248,11 @@ class Store:
 
     # --- Protokolle ------------------------------------------------------
     def save_protokoll(self, tid: str, style: str, status: str, content: dict, pid: str | None = None) -> dict:
+        """Je Transkript gibt es höchstens ein Protokoll pro Art (Zusammenfassung, Ergebnis, Verlauf)."""
         pid = pid or new_id()
         created = now_iso()
         with self._tx() as c:
+            c.execute("DELETE FROM protokolle WHERE transcript_id=? AND style=? AND id<>?", (tid, style, pid))
             c.execute(
                 "INSERT OR REPLACE INTO protokolle (id,transcript_id,created_at,style,status,content) VALUES (?,?,?,?,?,?)",
                 (pid, tid, created, style, status, json.dumps(content, ensure_ascii=False)),
@@ -266,6 +268,18 @@ class Store:
             return None
         return {"id": row["id"], "transcript_id": row["transcript_id"], "created_at": row["created_at"],
                 "style": row["style"], "status": row["status"], "content": json.loads(row["content"])}
+
+    def get_protokolle(self, tid: str) -> dict[str, dict]:
+        """Alle Protokolle eines Transkripts, je Art das neueste."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM protokolle WHERE transcript_id=? ORDER BY created_at ASC", (tid,)
+            ).fetchall()
+        out: dict[str, dict] = {}
+        for row in rows:
+            out[row["style"]] = {"id": row["id"], "transcript_id": row["transcript_id"], "created_at": row["created_at"],
+                                 "style": row["style"], "status": row["status"], "content": json.loads(row["content"])}
+        return out
 
     # --- Einstellungen (z. B. Glossar) ----------------------------------
     def get_setting(self, key: str, default):

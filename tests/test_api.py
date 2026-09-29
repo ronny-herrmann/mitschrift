@@ -283,3 +283,22 @@ def test_ai_tasks_run_in_background(client, monkeypatch):
     p = client.get(f"/api/transcripts/{tid}").json()["protokoll"]
     assert p["style"] == "verlauf" and "Erfundener" not in p["content"]["protokoll_md"]
     assert p["content"]["verworfen"] == 1
+
+
+def test_several_protocols_and_protocol_export(client):
+    tid = _upload(client, "Mehrere")
+    for style in ("zusammenfassung", "ergebnis", "zusammenfassung"):
+        r = client.post(f"/api/transcripts/{tid}/protokoll/import", json={"style": style, "protokoll_md": f"## {style}\n- Punkt [S0]"})
+        assert r.status_code == 200
+    d = client.get(f"/api/transcripts/{tid}").json()
+    assert set(d["protokolle"]) == {"zusammenfassung", "ergebnis"}, "je Art genau ein Protokoll"
+    r = client.patch(f"/api/transcripts/{tid}/protokoll", json={"style": "ergebnis", "status": "bestaetigt"}).json()
+    assert r["status"] == "bestaetigt" and r["content"]["geprueft_am"]
+    r = client.get(f"/api/transcripts/{tid}/export?format=protokoll&style=ergebnis")
+    assert r.status_code == 200 and "Ergebnisprotokoll.docx" in r.headers["content-disposition"]
+    from docx import Document
+    import io
+    paras = Document(io.BytesIO(r.content)).paragraphs
+    text = "\n".join(p.text for p in paras)
+    assert "Inhaltlich geprüft am" in text and "[S0]" not in text
+    assert "Transkript" not in [p.text for p in paras if p.style.name.startswith("Heading")], "nur das Protokoll"

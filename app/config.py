@@ -111,6 +111,8 @@ class Settings:
     llm_api_key: str = field(default_factory=lambda: _env("LLM_API_KEY", ""))
     llm_model: str = field(default_factory=lambda: _env("LLM_MODEL", ""))
     llm_timeout_s: int = field(default_factory=lambda: _env_int("LLM_TIMEOUT_S", 300))
+    # Wie viele Abschnitte gleichzeitig an das Sprachmodell gehen (passend zu --parallel des llama.cpp-Servers)
+    llm_parallel: int = field(default_factory=lambda: _env_int("LLM_PARALLEL", 2))
 
     # --- Speicherung / Löschung (Datensparsamkeit) ------------------------
     # Audio direkt nach fertiger Transkription löschen (dann kein Abspielen/Nachhören möglich)

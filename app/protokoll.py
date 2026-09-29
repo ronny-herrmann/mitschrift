@@ -106,7 +106,7 @@ def verify(t: Transcript, protokoll_md: str) -> dict:
         line = raw.rstrip()
         stripped = line.strip()
         is_heading = stripped.startswith("#")
-        is_content = bool(stripped) and not is_heading and stripped.lower() not in ("keine", "- keine", "keine.")
+        is_content = bool(stripped) and not is_heading and stripped.lower() not in ("keine", "- keine", "keine.", "kein thema eindeutig erkennbar.")
         refs = _refs_in(line) if is_content else []
         bad = [r for r in refs if r not in valid]
         status = "ok" if is_content else "neutral"
@@ -359,13 +359,14 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict]) -> str:
     seg = {s.idx: s for s in t.segments}
     out: list[str] = []
     if style == "zusammenfassung":
-        out += ["## Worum ging es", *(_liste(themen, "Kein Thema eindeutig erkennbar."))]
+        ueberblick = " ".join(f"{it['text'].rstrip('.')}. {_ref(it)}" for it in themen[:3])
+        out += ["## Überblick", ueberblick or "Kein Thema eindeutig erkennbar."]
         # je Abschnitt die ersten Aussagen, insgesamt höchstens 8 – verteilt über das ganze Gespräch
         kurz: list[dict] = []
         per = max(1, 8 // max(1, len(abschnitte)))
         for a in abschnitte:
             kurz += [it for it in a["items"] if it["typ"] == "AUSSAGE"][:per]
-        out += ["", "## Das Wichtigste", *_liste(_dedupe(kurz)[:8])]
+        out += ["", "## Kernaussagen", *_liste(_dedupe(kurz)[:8])]
         out += ["", "## Entscheidungen", *_liste(beschl), "", "## Aufgaben", *_liste(aufg),
                 "", "## Offene Fragen", *_liste(fragen)]
     elif style == "ergebnis":
@@ -406,26 +407,27 @@ def transcript_hash(t: Transcript) -> str:
     return h.hexdigest()[:16]
 
 
-def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None) -> dict:
-    """Stufe 1+2: Zeilen je Abschnitt von der KI holen und gegen das Transkript prüfen."""
+def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None, workers: int = 2) -> dict:
+    """Stufe 1+2: Zeilen je Abschnitt von der KI holen (bis zu `workers` gleichzeitig) und prüfen."""
+    from .bereinigung import parallel_blocks
     blocks = _seg_blocks(t, max_chars)
-    abschnitte, verworfen = [], []
-    if progress:
-        progress(0, len(blocks))
-    for i, block in enumerate(blocks, 1):
+
+    def run(i, block):
         max_aussagen = max(3, min(8, len(block) // 3))
         raw = llm.chat(EXTRACT_SYSTEM, EXTRACT_USER.format(transkript=_block_text(block), max_aussagen=max_aussagen),
                        temperature=0.0)
-        ok, bad = check_items(parse_items(raw), block)
+        return check_items(parse_items(raw), block)
+
+    results = parallel_blocks(blocks, run, lambda b: sum(len(s.clean or s.text) for s in b), workers, progress)
+    abschnitte, verworfen = [], []
+    for block, (ok, bad) in zip(blocks, results):
         abschnitte.append({"start": block[0].start, "end": block[-1].end, "items": ok})
         verworfen += bad
-        if progress:
-            progress(i, len(blocks))
     return {"hash": transcript_hash(t), "abschnitte": abschnitte, "verworfen": verworfen}
 
 
 def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars: int = 5000,
-                     progress=None, cache: dict | None = None) -> dict:
+                     progress=None, cache: dict | None = None, workers: int = 2) -> dict:
     """Belegte Protokollerstellung. Mit gültigem Zwischenspeicher (cache) ohne erneuten KI-Aufruf."""
     style = style if style in STYLES else "zusammenfassung"
     if cache and cache.get("hash") == transcript_hash(t):
@@ -433,7 +435,7 @@ def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars
     else:
         if llm is None:
             raise ValueError("Keine KI angebunden")
-        ex = extract(t, llm, max_chars, progress)
+        ex = extract(t, llm, max_chars, progress, workers)
     n_ok = sum(len(a["items"]) for a in ex["abschnitte"])
     if not n_ok:
         raise ValueError("Im Transkript wurden keine belegbaren Inhalte gefunden. Es wird kein Protokoll erzeugt, "

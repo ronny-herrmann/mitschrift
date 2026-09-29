@@ -148,8 +148,18 @@ def test_upload_detail_edit_and_summary_import(page, server):
     page.click("#m-ok")
     page.wait_for_selector(".prot .pl")
     assert page.locator(".prot .pl.unbelegt").count() == 1
-    assert "50 % belegt" in page.inner_text(".pstats")
-    page.click(".prot .ref")
+    assert "1 von 2 Aussagen" in page.inner_text(".quality")
+    page.click(".prot .pl[data-refs='0']")
+    # Bearbeiten direkt im Text (ohne Markdown) und speichern
+    page.click("#p-edit")
+    page.wait_for_selector("#prot.editing")
+    page.locator("#prot .pl.unbelegt").evaluate("el => el.textContent = 'Von Hand ergänzt.'")
+    page.click("#p-save")
+    page.wait_for_selector("#prot:not(.editing)")
+    assert "Von Hand ergänzt." in page.inner_text("#prot")
+    page.click("#p-confirm")
+    page.wait_for_selector("#p-confirm.done")
+    _shot(page, "protokoll")
 
     # Bereinigen ohne KI → NOVA-Dialog, Import mit Treue-Prüfung
     page.click("#ai-clean")

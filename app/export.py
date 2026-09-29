@@ -8,6 +8,15 @@ from datetime import datetime
 from .store import Transcript
 
 
+def local_dt(iso: str) -> str:
+    """Zeitstempel (UTC gespeichert) in deutscher Ortszeit anzeigen."""
+    from zoneinfo import ZoneInfo
+    try:
+        return datetime.fromisoformat(iso).astimezone(ZoneInfo("Europe/Berlin")).strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return ""
+
+
 def fmt_time(sec: float) -> str:
     sec = max(0.0, float(sec))
     h, rest = divmod(int(sec), 3600)
@@ -39,7 +48,7 @@ def to_txt(t: Transcript, with_time: bool = True, with_speaker: bool = True) -> 
 
 
 def to_markdown(t: Transcript) -> str:
-    created = datetime.fromisoformat(t.created_at).strftime("%d.%m.%Y %H:%M") if t.created_at else ""
+    created = local_dt(t.created_at) if t.created_at else ""
     out = [f"# {t.title}", "", f"Aufgenommen: {created} · Dauer: {fmt_time(t.duration)} · Modell: {t.model}", ""]
     for s in t.segments:
         out.append(f"- **{fmt_time(s.start)}** {('*' + s.speaker + ':* ') if s.speaker else ''}{s.clean or s.text}")
@@ -67,6 +76,13 @@ def refs_to_times(md: str, t: Transcript) -> str:
     return re.sub(r"\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]", repl, md)
 
 
+def strip_refs(md: str) -> str:
+    """Belegnummern ([S12]) für Leser entfernen – die Prüfung ist dann schon erfolgt."""
+    import re
+    md = re.sub(r"\s*\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]", "", md)
+    return re.sub(r"[ \t]+\n", "\n", md)
+
+
 def _md_inline(p, text: str) -> None:
     """**fett** aus dem Protokoll als fette Schrift übernehmen."""
     import re
@@ -79,7 +95,7 @@ def _md_inline(p, text: str) -> None:
 
 
 def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str = "Zusammenfassung",
-            fliesstext: bool = False) -> bytes:
+            fliesstext: bool = False, nur_protokoll: bool = False, pruefstatus: str = "") -> bytes:
     from docx import Document
     from docx.shared import Pt, RGBColor
 
@@ -89,7 +105,7 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
     style.font.size = Pt(11)
 
     doc.add_heading(t.title, level=1)
-    created = datetime.fromisoformat(t.created_at).strftime("%d.%m.%Y %H:%M") if t.created_at else ""
+    created = local_dt(t.created_at) if t.created_at else ""
     meta = doc.add_paragraph(f"Aufgenommen: {created}   ·   Dauer: {fmt_time(t.duration)}   ·   Spracherkennung: {t.model}")
     meta.runs[0].font.size = Pt(9)
     meta.runs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
@@ -108,11 +124,11 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
     else:
         if protokoll_md:
             doc.add_heading(protokoll_name, level=2)
-            note = doc.add_paragraph("Von der KI erstellt und automatisch gegen das Transkript geprüft. "
-                                     "Zeitangaben in eckigen Klammern verweisen auf die Stelle in der Aufnahme.")
+            note = doc.add_paragraph((pruefstatus + ". " if pruefstatus else "")
+                                     + "Jede Aussage wurde automatisch gegen das Transkript geprüft.")
             note.runs[0].font.size = Pt(9)
             note.runs[0].italic = True
-            for line in refs_to_times(protokoll_md, t).splitlines():
+            for line in strip_refs(protokoll_md).splitlines():
                 line = line.rstrip()
                 if not line:
                     continue
@@ -126,6 +142,10 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                     _md_inline(doc.add_paragraph(style="List Bullet"), line[2:])
                 else:
                     _md_inline(doc.add_paragraph(), line)
+            if nur_protokoll:
+                buf = io.BytesIO()
+                doc.save(buf)
+                return buf.getvalue()
             doc.add_page_break()
 
         doc.add_heading("Transkript", level=2)

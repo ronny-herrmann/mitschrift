@@ -51,22 +51,34 @@ def _korrekturen(tid: str) -> list[dict]:
     return state.store.get_setting(f"korrekturen:{tid}", [])
 
 
+TEMPO_START = {"bereinigen": 30.0, "protokoll": 90.0}   # Zeichen/s (Ministral 8B auf 8 vCPU, 2 parallel)
+
+
 def _start_task(tid: str, kind: str, fn) -> dict:
     """KI-Aufgabe im Hintergrund starten; Fortschritt über GET /api/transcripts/{tid}/task."""
     import threading
     cur = state.tasks.get(tid)
     if cur and cur["status"] == "running":
         raise HTTPException(409, "Für dieses Transkript läuft bereits eine KI-Aufgabe.")
-    task = {"kind": kind, "status": "running", "done": 0, "total": 0, "started": time.time(), "result": None, "error": ""}
+    task = {"kind": kind, "status": "running", "done": 0, "total": 0, "started": time.time(), "result": None, "error": "",
+            "eta": 0.0}
     state.tasks[tid] = task
+    # Gelernte Geschwindigkeit (Zeichen pro Sekunde) für eine ehrliche Zeitschätzung ab der ersten Sekunde
+    tempo = float(state.store.get_setting(f"tempo:{kind}", TEMPO_START.get(kind, 40.0)))
 
     def progress(done: int, total: int) -> None:
         task["done"], task["total"] = done, total
+        if total and not task["eta"]:
+            task["eta"] = round(max(3.0, total / max(tempo, 1.0)), 1)
 
     def run() -> None:
         try:
             task["result"] = fn(progress)
             task["status"] = "done"
+            secs = time.time() - task["started"]
+            if task["total"] and secs > 2 and not task.get("cached"):
+                neu = task["total"] / secs
+                state.store.set_setting(f"tempo:{kind}", round(0.5 * tempo + 0.5 * neu, 2))
         except ValueError as e:
             task["status"], task["error"] = "error", str(e)
         except Exception as e:
@@ -325,6 +337,7 @@ async def get_transcript(tid: str):
     if p:
         d["progress"] = {"done": p[0], "total": p[1]}
     d["protokoll"] = state.store.get_protokoll(tid)
+    d["protokolle"] = state.store.get_protokolle(tid)
     return d
 
 
@@ -453,7 +466,10 @@ DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 
 
 @app.get("/api/transcripts/{tid}/export", dependencies=[Depends(require_auth)])
-async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: bool = True, protokoll: bool = False):
+async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: bool = True, protokoll: bool = False,
+                 style: str = ""):
+    """format: docx (Transkript, mit protokoll=1 zusätzlich das Protokoll), protokoll (nur Protokoll, Word),
+    fliesstext (Word ohne Zeitmarken), txt, md, srt. style wählt das Protokoll (Standard: zuletzt erstellt)."""
     t = _get_or_404(tid)
     if format == "txt":
         suffix = "Transkript mit Zeit und Sprecher" if (zeit and sprecher) else "Fliesstext"
@@ -462,21 +478,30 @@ async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: boo
         return PlainTextResponse(to_markdown(t), media_type="text/markdown", headers=_download_headers(t.title, "Markdown", "md"))
     if format == "srt":
         return PlainTextResponse(to_srt(t), headers=_download_headers(t.title, "Untertitel", "srt"))
-    if format in ("docx", "fliesstext"):
-        pm, pname = None, ""
-        if protokoll:
-            p = state.store.get_protokoll(tid)
-            pm = (p or {}).get("content", {}).get("protokoll_md")
-            pname = STYLES.get((p or {}).get("style", ""), "Zusammenfassung")
-            if not pm:
-                raise HTTPException(404, "Noch keine Zusammenfassung vorhanden")
+    if format in ("docx", "fliesstext", "protokoll"):
+        p = None
+        if protokoll or format == "protokoll":
+            p = state.store.get_protokolle(tid).get(style) if style else state.store.get_protokoll(tid)
+            if not p:
+                raise HTTPException(404, "Noch kein Protokoll vorhanden")
+        pname = STYLES.get(p["style"], "Protokoll") if p else ""
         if format == "fliesstext":
             data, suffix = to_docx(t, fliesstext=True), "Fliesstext"
+        elif format == "protokoll":
+            data, suffix = to_docx(t, p["content"]["protokoll_md"], pname, nur_protokoll=True, pruefstatus=_pruefstatus(p)), pname
         else:
-            data = to_docx(t, pm, pname)
-            suffix = f"Transkript und {pname}" if pm else "Transkript"
+            data = to_docx(t, p["content"]["protokoll_md"] if p else None, pname, pruefstatus=_pruefstatus(p) if p else "")
+            suffix = f"Transkript und {pname}" if p else "Transkript"
         return Response(data, media_type=DOCX_TYPE, headers=_download_headers(t.title, suffix, "docx"))
-    raise HTTPException(400, "format muss txt, md, srt, docx oder fliesstext sein")
+    raise HTTPException(400, "format muss txt, md, srt, docx, protokoll oder fliesstext sein")
+
+
+def _pruefstatus(p: dict) -> str:
+    am = (p.get("content") or {}).get("geprueft_am")
+    if p.get("status") == "bestaetigt" and am:
+        from .export import local_dt
+        return "Inhaltlich geprüft am " + local_dt(am)[:10]
+    return "KI-Entwurf – inhaltlich noch nicht von einer Person geprüft"
 
 
 @app.get("/api/transcripts/{tid}/nova-prompt", dependencies=[Depends(require_auth)])
@@ -501,7 +526,10 @@ async def make_protokoll(tid: str, body: ProtokollRequest):
 
     def run(progress):
         cache = state.store.get_setting(f"extrakt:{tid}", None)
-        content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache)
+        from .protokoll import transcript_hash
+        if cache and cache.get("hash") == transcript_hash(t):
+            state.tasks[tid]["cached"] = True
+        content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache, workers=settings.llm_parallel)
         state.store.set_setting(f"extrakt:{tid}", content.pop("extrakt"))
         return state.store.save_protokoll(tid, style, "entwurf", content)
 
@@ -541,21 +569,25 @@ async def import_protokoll(tid: str, body: ProtokollImport):
 class ProtokollPatch(BaseModel):
     protokoll_md: str | None = None
     status: str | None = None  # entwurf | bestaetigt
+    style: str | None = None   # welches Protokoll (Standard: das zuletzt erstellte)
 
 
 @app.patch("/api/transcripts/{tid}/protokoll", dependencies=[Depends(require_auth)])
 async def patch_protokoll(tid: str, body: ProtokollPatch):
     t = _get_or_404(tid)
-    p = state.store.get_protokoll(tid)
+    p = state.store.get_protokolle(tid).get(body.style) if body.style else state.store.get_protokoll(tid)
     if not p:
         raise HTTPException(404, "Kein Protokoll vorhanden")
     content = p["content"]
     if body.protokoll_md is not None:
         content["protokoll_md"] = body.protokoll_md
         content["pruefung"] = verify(t, body.protokoll_md)
+        content["bearbeitet"] = True
     status = body.status or p["status"]
     if status not in ("entwurf", "bestaetigt"):
         raise HTTPException(400, "status muss entwurf oder bestaetigt sein")
+    if body.status:
+        content["geprueft_am"] = datetime.now(timezone.utc).isoformat(timespec="seconds") if status == "bestaetigt" else ""
     return state.store.save_protokoll(tid, p["style"], status, content, pid=p["id"])
 
 
@@ -598,7 +630,8 @@ async def bereinigen(tid: str):
 
     def run(progress):
         cleaned = bereinigung.clean_segments(llm, t.segments, state.store.get_setting("glossar", []),
-                                             korrekturen=_korrekturen(tid), progress=progress)
+                                             korrekturen=_korrekturen(tid), progress=progress,
+                                             workers=settings.llm_parallel)
         return _store_clean(t, cleaned)
 
     return _start_task(tid, "bereinigen", run)

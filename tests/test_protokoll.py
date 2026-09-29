@@ -86,7 +86,7 @@ def test_styles_differ_and_cache_skips_llm():
     t = make_transcript()
     llm = FakeLLM()
     first = create_protokoll(t, "zusammenfassung", llm)
-    assert "## Worum ging es" in first["protokoll_md"] and "## Das Wichtigste" in first["protokoll_md"]
+    assert "## Überblick" in first["protokoll_md"] and "## Kernaussagen" in first["protokoll_md"]
     again = create_protokoll(t, "verlauf", None, cache=first["extrakt"])
     assert llm.calls == 1, "Wechsel der Protokollart braucht keine neue KI-Anfrage"
     assert "**Vorsitz:**" in again["protokoll_md"] and "00:00 – " in again["protokoll_md"]

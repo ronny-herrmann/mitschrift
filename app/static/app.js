@@ -14,7 +14,7 @@
   };
   const fmtDur = (sec) => { sec = Math.round(sec || 0); if (sec < 60) return sec + ' s'; const m = Math.round(sec / 60); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
   const fmtDate = (iso, opts = { dateStyle: 'medium', timeStyle: 'short' }) => { try { return new Date(iso).toLocaleString('de-DE', opts); } catch { return iso; } };
-  const COLORS = ['#0069FF', '#E5484D', '#16A34A', '#9333EA', '#EA580C', '#0891B2', '#DB2777', '#65A30D'];
+  const COLORS = ['#006EB7', '#E73039', '#16A34A', '#9333EA', '#EA580C', '#0891B2', '#DB2777', '#65A30D'];
   const initials = (name) => { const m = /^Sprecher\s+(\d+)/i.exec(name || ''); return m ? 'S' + m[1] : (name || '?').split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase(); };
 
   let toastTimer;
@@ -203,7 +203,7 @@
       let sum = 0; for (const v of buf) sum += v * v;
       const lvl = paused ? 0 : Math.min(1, Math.sqrt(sum / buf.length) * 6);
       lastLevels.push(lvl); const bars = Math.floor(w / 4); if (lastLevels.length > bars) lastLevels = lastLevels.slice(-bars);
-      g.fillStyle = paused ? '#9AA4B2' : '#0069FF';
+      g.fillStyle = paused ? '#9AA4B2' : '#006EB7';
       lastLevels.forEach((v, i) => { const bh = Math.max(2, v * (h - 4)); const x = w - (lastLevels.length - i) * 4; g.globalAlpha = 0.35 + 0.65 * (i / lastLevels.length); g.fillRect(x, (h - bh) / 2, 2.5, bh); });
       raf = requestAnimationFrame(drawWave);
     }
@@ -422,16 +422,18 @@
 
   // ================================================================ FAQ & interne Infos
   const INFO_TABS = [
-    ['faq', 'Häufige Fragen'], ['technik', 'Technische Doku'], ['infrastruktur', 'Infrastruktur'],
+    ['infrastruktur', 'Infrastruktur'], ['technik', 'Technische Doku'],
     ['datenschutz', 'Datenschutz'], ['sicherheit', 'IT-Sicherheit'], ['personalrat', 'Personalrat'],
   ];
   async function renderInfo(tab) {
-    if (!INFO_TABS.some(([k]) => k === tab)) tab = 'faq';
-    const intern = tab !== 'faq';
-    view.innerHTML = `
-      <div class="page-head"><h1>${intern ? 'Infos <span class="pill">intern</span>' : 'Häufige Fragen'}</h1>
-        <p>${intern ? 'Unterlagen für Datenschutz, IT-Sicherheit, Personalrat und Betrieb. Stand und Inhalte wachsen mit dem Projekt.' : 'Kurze Antworten für alle, die den Protokollanten nutzen.'}</p></div>
-      <nav class="info-tabs" aria-label="Info-Bereiche">${INFO_TABS.map(([k, l]) => `<a href="#/${k === 'faq' ? 'faq' : 'infos/' + k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</nav>
+    const faq = tab === 'faq';
+    if (!faq && !INFO_TABS.some(([k]) => k === tab)) tab = 'infrastruktur';
+    view.innerHTML = faq ? `
+      <div class="page-head"><h1>Häufige Fragen</h1><p>Kurze Antworten für alle, die den Protokollanten nutzen.</p></div>
+      <article class="doc card" id="doc"><p class="muted">Lädt …</p></article>` : `
+      <div class="page-head"><h1>Infos <span class="pill">intern</span></h1>
+        <p>Unterlagen für Betrieb, Datenschutz, IT-Sicherheit und Personalrat. Stand und Inhalte wachsen mit dem Projekt.</p></div>
+      <nav class="info-tabs" aria-label="Info-Bereiche">${INFO_TABS.map(([k, l]) => `<a href="#/infos/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</nav>
       <article class="doc card" id="doc"><p class="muted">Lädt …</p></article>`;
     const act = $('.info-tabs a.active'); if (act && act.scrollIntoView) act.scrollIntoView({ inline: 'center', block: 'nearest' });
     const html = await api(`/api/docs/${tab}`);
@@ -472,7 +474,9 @@
   };
   async function renderDetail(id) {
     let t = await api(`/api/transcripts/${id}`);
-    let showClean = true, mTab = 'tx', editMd = false, task = null, taskPoll = null;
+    let showClean = true, mTab = 'tx', editMd = false, task = null, taskPoll = null, tick = null;
+    let curStyle = t.protokoll ? t.protokoll.style : null;
+    const prot = () => (curStyle && t.protokolle && t.protokolle[curStyle]) || null;
 
     const speakerColor = () => { const m = new Map(); t.segments.forEach((s) => { if (s.speaker && !m.has(s.speaker)) m.set(s.speaker, COLORS[m.size % COLORS.length]); }); return m; };
     const hasClean = () => t.segments.some((s) => s.clean);
@@ -480,18 +484,28 @@
     const working = () => t.status === 'processing' || t.status === 'refining';
     const busy = () => task && task.status === 'running';
 
+    function taskEstimate() {
+      const el = (task.elapsed || 0) + (task._since ? (Date.now() - task._since) / 1000 : 0);
+      const tot = task.total || 0, done = task.done || 0;
+      let eta = task.eta || 0;
+      if (tot && done) eta = eta ? 0.5 * eta + 0.5 * (el * tot / done) : el * tot / done;
+      const byWork = tot ? done / tot : 0, byTime = eta ? el / eta : 0;
+      const pct = Math.max(byWork, Math.min(0.97, byTime));
+      return { pct: Math.round(pct * 100), rest: eta ? Math.max(0, eta - el) : null };
+    }
     function taskBar() {
       if (!busy()) return '';
       const label = task.kind === 'bereinigen' ? 'KI bereinigt den Text' : `KI erstellt ${STYLE_INFO[task.style || 'zusammenfassung'][0]}`;
-      const pct = task.total ? Math.round(100 * task.done / task.total) : 3;
-      const step = task.total ? ` · Abschnitt ${Math.min(task.done + 1, task.total)} von ${task.total}` : ' · startet …';
-      return `<div class="progress-banner task"><span class="spin"></span><span>${label}${step} · ${fmt(task.elapsed || 0)}</span><div class="bar"><i style="width:${Math.max(3, pct)}%"></i></div></div>`;
+      const e = taskEstimate();
+      const rest = e.rest == null ? 'startet …' : e.rest < 8 ? 'gleich fertig' : `noch ca. ${e.rest < 90 ? Math.round(e.rest / 5) * 5 + ' s' : Math.round(e.rest / 60) + ' Min.'}`;
+      return `<div class="progress-banner task"><span class="spin"></span><span class="pb-label">${label}</span><span class="pb-pct">${e.pct} %</span><div class="bar"><i style="width:${Math.max(2, e.pct)}%"></i></div><span class="pb-rest">${rest}</span></div>`;
     }
+    function refreshTaskBar() { const bar = $('.progress-banner.task'); if (bar && busy()) bar.outerHTML = taskBar(); }
 
     function draw() {
       const rtf = t.duration && t.processing_seconds ? t.duration / t.processing_seconds : 0;
       const speakers = new Set(t.segments.map((s) => s.speaker).filter(Boolean));
-      const hasP = !!t.protokoll;
+
       view.innerHTML = `
         <div class="d-head">
           <input class="d-title" id="d-title" value="${esc(t.title)}" aria-label="Titel bearbeiten">
@@ -503,7 +517,7 @@
           <span class="chip">${fmt(t.duration)}</span>
           ${speakers.size ? `<span class="chip">${speakers.size} Sprecher</span>` : ''}
           <span class="chip blue" title="Spracherkennung">Modell: ${esc(t.model || '–')}</span>
-          ${rtf ? `<span class="chip ok" title="Rechenzeit ${t.processing_seconds} s">${rtf.toFixed(0)}× schneller als Echtzeit</span>` : ''}
+          ${rtf ? `<span class="chip ok" title="So lange hat der Server für die Spracherkennung gebraucht">Rechenzeit ${fmtDur(t.processing_seconds)} · ${rtf.toFixed(0)}× schneller als die Aufnahme</span>` : ''}
           ${hasClean() ? '<span class="chip ai">✨ KI-bereinigt</span>' : ''}
           ${t.status === 'error' ? `<span class="chip danger">${esc(t.error)}</span>` : (t.error ? `<span class="chip warn" title="${esc(t.error)}">Hinweis</span>` : '')}
         </div>
@@ -514,7 +528,7 @@
           <div class="menu"><button class="btn ai" id="ai-sum" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.doc}Protokoll erstellen ▾</button></div>
           <span class="note">${llm() ? `KI: ${esc(health.llm_model)} · korrigiert nur, erfindet nichts · Ihre eigenen Korrekturen haben Vorrang` : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
         </div>
-        <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">${hasP ? esc(STYLE_INFO[t.protokoll.style]?.[0] || 'Zusammenfassung') : 'Zusammenfassung'}</button></div></div>
+        <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">Protokoll</button></div></div>
         <div class="d-grid" data-tab="${mTab}">
           <section class="tx-pane">
             <div class="pane-head"><h2>Transkript</h2><span class="sp"></span>
@@ -553,47 +567,78 @@
       }).join('');
     }
 
+    const TIPS = { unbelegt: 'Keine Belegstelle im Transkript – bitte prüfen', ungueltig: 'Die Belegstelle gibt es nicht – bitte prüfen', schwach: 'Passt inhaltlich kaum zur Stelle im Transkript – bitte prüfen' };
+    function inlineMd(text) { return esc(text).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>'); }
     function renderMd(zeilen) {
-      const tips = { unbelegt: 'Keine Belegstelle – bitte prüfen', ungueltig: 'Belegstelle gibt es nicht – bitte prüfen', schwach: 'Belegstelle passt inhaltlich kaum – bitte prüfen' };
       return zeilen.map((z) => {
         const raw = z.text.trim(); if (!raw) return '';
         const h = raw.match(/^(#{1,4})\s+(.*)$/);
-        if (h) return `<h${h[1].length <= 2 ? 3 : 4}>${esc(h[2])}</h${h[1].length <= 2 ? 3 : 4}>`;
-        const li = /^[-*]\s+/.test(raw), num = /^\d+\.\s+/.test(raw);
-        let html = esc(li ? raw.replace(/^[-*]\s+/, '') : raw);
-        html = html.replace(/\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, (ref) => [...ref.matchAll(/\d+/g)].map((x) => +x[0]).map((n) => { const sg = t.segments.find((s) => s.idx === n); return `<span class="ref ${sg ? '' : 'bad'}" data-ref="${n}" title="Zur Stelle springen">${sg ? fmt(sg.start) : 'S' + n}</span>`; }).join(''));
-        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-        return `<div class="pl ${li || num ? 'li' : ''} ${num ? 'num' : ''} ${z.status}" ${tips[z.status] ? `title="${tips[z.status]}"` : ''}>${html}</div>`;
+        if (h) return h[1].length <= 2 ? `<h3>${esc(h[2])}</h3>` : `<h4>${esc(h[2])}</h4>`;
+        const li = /^[-*]\s+/.test(raw);
+        const body = (li ? raw.replace(/^[-*]\s+/, '') : raw).replace(/\s*\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, '').trim();
+        const refs = (z.refs || []).join(',');
+        const tip = TIPS[z.status] || (refs ? 'Klicken: zur Stelle im Transkript springen' : '');
+        return `<div class="pl ${li ? 'li' : ''} ${z.status}" data-refs="${refs}" ${tip ? `title="${tip}"` : ''}>${inlineMd(body)}</div>`;
       }).join('');
+    }
+    function toMarkdown(root) {
+      const out = [];
+      [...root.children].forEach((el) => {
+        const txt = (node) => {
+          const c = node.cloneNode(true);
+          c.querySelectorAll('strong,b').forEach((b) => b.replaceWith('**' + b.textContent + '**'));
+          return c.textContent.replace(/\s+/g, ' ').trim();
+        };
+        const text = txt(el); if (!text) return;
+        if (el.tagName === 'H3') { out.push('', '## ' + text); return; }
+        if (el.tagName === 'H4') { out.push('', '### ' + text); return; }
+        const refs = (el.dataset.refs || '').split(',').filter(Boolean);
+        out.push((el.classList.contains('li') ? '- ' : '') + text + (refs.length ? ' [' + refs.map((r) => 'S' + r).join(', ') + ']' : ''));
+      });
+      return out.join('\n').trim() + '\n';
     }
 
     function styleButtons(cur) {
       return Object.entries(STYLE_INFO).map(([k, [name, desc]]) => `<button class="style-card ${k === cur ? 'on' : ''}" data-style="${k}" ${busy() || working() ? 'disabled' : ''}><strong>${name}</strong><span>${desc}</span></button>`).join('');
     }
+    function styleMenuHtml() {
+      return Object.entries(STYLE_INFO).map(([k, [n, d]]) => {
+        const have = t.protokolle && t.protokolle[k];
+        return have ? `<button data-act="${k}" class="${k === curStyle ? 'current' : ''}"><strong>${n}</strong><small>${k === curStyle ? 'wird angezeigt' : 'anzeigen'}</small></button>`
+          : `<span class="disabled"><strong>${n}</strong><small>noch nicht erstellt – oben über „Protokoll erstellen“</small></span>`;
+      }).join('');
+    }
+
+    function qualityLine(p) {
+      const pr = p.content.pruefung || { zeilen_inhalt: 0, unbelegt: 0, ungueltige_belege: 0, schwach_belegt: 0 };
+      const n = pr.zeilen_inhalt || 0, bad = (pr.unbelegt || 0) + (pr.ungueltige_belege || 0) + (pr.schwach_belegt || 0);
+      const weg = p.content.verworfen || 0;
+      const ok = n - bad;
+      let html = `<span class="q-ico ${bad ? 'warn' : 'ok'}">${bad ? '!' : '✓'}</span><span><strong>${ok} von ${n} Aussagen</strong> stehen so im Transkript.`;
+      if (bad) html += ` ${bad} ${bad === 1 ? 'Stelle ist' : 'Stellen sind'} gelb markiert – bitte prüfen.`;
+      if (weg) html += ` <span class="muted" title="${esc((p.content.verworfen_beispiele || []).join(' · '))}">${weg} KI-${weg === 1 ? 'Aussage wurde' : 'Aussagen wurden'} entfernt, weil sie nicht im Transkript ${weg === 1 ? 'steht' : 'stehen'}.</span>`;
+      return `<div class="quality">${html}</span></div>`;
+    }
 
     function drawNotes() {
-      const p = t.protokoll;
-      if (!p) return `<div class="pane-head"><h2>Zusammenfassung</h2></div><div class="card empty-notes"><div class="big">✨</div>Noch keine Zusammenfassung. Welche Art soll entstehen?<div class="style-cards">${styleButtons('')}</div><div class="muted small">Jede Aussage bekommt eine Belegstelle im Transkript. Was dort nicht steht, wird verworfen.</div></div>`;
-      const pr = p.content.pruefung || { zeilen: [], quote_belegt: 1, unbelegt: 0, ungueltige_belege: 0, schwach_belegt: 0 };
-      const name = STYLE_INFO[p.style]?.[0] || 'Zusammenfassung';
-      return `<div class="pane-head"><h2>${esc(name)}</h2></div>
-        <div class="card">
-          <div class="pstats">
-            <span class="chip ${pr.quote_belegt >= 0.95 ? 'ok' : 'warn'}" title="Anteil der Aussagen mit passender Belegstelle">${Math.round(pr.quote_belegt * 100)} % belegt</span>
-            ${pr.unbelegt ? `<span class="chip warn">${pr.unbelegt} ohne Beleg</span>` : ''}
-            ${pr.ungueltige_belege ? `<span class="chip danger">${pr.ungueltige_belege} falscher Beleg</span>` : ''}
-            ${pr.schwach_belegt ? `<span class="chip warn" title="Die genannte Stelle passt inhaltlich kaum zur Aussage">${pr.schwach_belegt} schwach belegt</span>` : ''}
-            ${p.content.verworfen ? `<span class="chip" title="${esc((p.content.verworfen_beispiele || []).join(' · '))}">${p.content.verworfen} KI-Aussagen verworfen (nicht im Transkript)</span>` : ''}
-            <span class="chip ${p.status === 'bestaetigt' ? 'ok' : ''}">${p.status === 'bestaetigt' ? '✓ geprüft' : 'Entwurf'}</span>
-          </div>
-          ${editMd ? `<textarea id="p-md" style="width:100%;min-height:320px;font-family:ui-monospace,Consolas,monospace;font-size:.85rem">${esc(p.content.protokoll_md)}</textarea>` : `<div class="prot">${renderMd(pr.zeilen)}</div>`}
+      const p = prot();
+      const picker = t.protokolle && Object.keys(t.protokolle).length
+        ? `<div class="menu"><button class="style-pick" id="p-pick">${esc(STYLE_INFO[curStyle]?.[0] || 'Protokoll')} <span class="chev">▾</span></button></div>` : '';
+      const head = `<div class="pane-head"><h2>Protokoll</h2><span class="sp"></span>${picker}</div>`;
+      if (!p) return `${head}<div class="card notes-card empty-notes"><p>Noch kein Protokoll.</p><p class="muted small">Oben auf <strong>„Protokoll erstellen“</strong> klicken und die Art wählen – oder direkt hier:</p><div class="style-cards">${styleButtons('')}</div><p class="muted small">Jede Aussage wird gegen das Transkript geprüft. Was dort nicht steht, wird entfernt.</p></div>`;
+      const geprueft = p.status === 'bestaetigt';
+      const am = p.content.geprueft_am ? fmtDate(p.content.geprueft_am, { dateStyle: 'medium' }) : '';
+      return `${head}
+        <div class="card notes-card">
+          ${qualityLine(p)}
+          <div class="prot ${editMd ? 'editing' : ''}" id="prot" ${editMd ? 'contenteditable="true" spellcheck="true"' : ''}>${renderMd((p.content.pruefung || {}).zeilen || [])}</div>
           <div class="p-actions">
-            ${editMd ? '<button class="btn primary sm" id="p-save">Speichern</button><button class="btn ghost sm" id="p-cancel">Abbrechen</button>' : '<button class="btn sm" id="p-edit">Bearbeiten</button>'}
-            <button class="btn sm" id="p-confirm">${p.status === 'bestaetigt' ? 'Bestätigung aufheben' : ICON.check + 'Als geprüft markieren'}</button>
-            <button class="btn ghost sm" id="p-copy">Kopieren</button>
+            ${editMd ? '<button class="btn primary sm" id="p-save">Speichern</button><button class="btn ghost sm" id="p-cancel">Abbrechen</button><span class="muted small">Direkt im Text ändern – wie in Word.</span>'
+              : `<button class="btn sm" id="p-edit">Bearbeiten</button>
+                 <button class="btn sm ${geprueft ? 'done' : ''}" id="p-confirm" title="${geprueft ? 'Markierung aufheben' : 'Bestätigen, dass eine Person das Protokoll inhaltlich geprüft hat. Steht dann auch im Word-Export.'}">${geprueft ? ICON.check + 'Geprüft' + (am ? ' am ' + am : '') : 'Als geprüft markieren'}</button>
+                 <button class="btn ghost sm" id="p-copy">Kopieren</button>`}
           </div>
-        </div>
-        <div class="other-styles"><div class="muted small">Andere Protokollart erstellen:</div><div class="style-cards compact">${styleButtons(p.style)}</div></div>`;
+        </div>`;
     }
 
     // ---- Interaktion
@@ -609,15 +654,20 @@
     function bind() {
       $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); loadSide(); });
       const ex = (q) => `/api/transcripts/${t.id}/export?${q}`;
-      $('#d-export').addEventListener('click', (e) => openMenu(e.currentTarget, `
+      $('#d-export').addEventListener('click', (e) => {
+        const p = prot(), pn = p ? STYLE_INFO[p.style][0] : 'Protokoll', st = p ? `&style=${p.style}` : '';
+        const dis = (label) => `<span class="disabled" title="Zuerst ein Protokoll erstellen">${label}</span>`;
+        openMenu(e.currentTarget, `
         <div class="menu-label">Word</div>
         <a href="${ex('format=docx')}">Transkript (mit Zeit &amp; Sprecher)</a>
-        ${t.protokoll ? `<a href="${ex('format=docx&protokoll=1')}">Transkript und ${esc(STYLE_INFO[t.protokoll.style]?.[0] || 'Zusammenfassung')}</a>` : '<span class="disabled" title="Zuerst ein Protokoll erstellen">Transkript und Zusammenfassung</span>'}
+        ${p ? `<a href="${ex('format=protokoll' + st)}">${esc(pn)}</a>` : dis('Protokoll')}
+        ${p ? `<a href="${ex('format=docx&protokoll=1' + st)}">Transkript und ${esc(pn)}</a>` : dis('Transkript und Protokoll')}
         <a href="${ex('format=fliesstext')}">Nur Fließtext</a><hr>
         <div class="menu-label">Weitere Formate</div>
         <a href="${ex('format=txt')}">Text mit Zeit &amp; Sprecher (.txt)</a>
         <a href="${ex('format=md')}">Markdown (.md)</a>
-        <a href="${ex('format=srt')}">Untertitel (.srt)</a>`));
+        <a href="${ex('format=srt')}">Untertitel (.srt)</a>`);
+      });
       $('#d-more').addEventListener('click', (e) => openMenu(e.currentTarget, `
         ${hasClean() ? '<button data-act="unclean">KI-Bereinigung verwerfen</button>' : ''}
         <button data-act="delaudio" ${t.has_audio ? '' : 'disabled'}>Nur Audio löschen</button><hr>
@@ -667,12 +717,33 @@
       $('#ai-clean').addEventListener('click', aiClean);
       $('#ai-sum').addEventListener('click', (e) => openMenu(e.currentTarget, Object.entries(STYLE_INFO).map(([k, [n, d]]) => `<button data-act="${k}"><strong>${n}</strong><small>${d}</small></button>`).join(''), (st) => aiSum(st)));
       $$('[data-style]').forEach((b) => b.addEventListener('click', () => aiSum(b.dataset.style)));
-      $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); });
+      $('#p-pick')?.addEventListener('click', (e) => openMenu(e.currentTarget, styleMenuHtml(), (st) => { curStyle = st; editMd = false; draw(); }));
+      if (!editMd) $$('#prot .pl[data-refs]').forEach((el) => { const r = (el.dataset.refs || '').split(',').filter(Boolean); if (r.length) el.addEventListener('click', () => jump(+r[0])); });
+      $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); const pr = $('#prot'); if (pr) { pr.focus(); } });
       $('#p-cancel')?.addEventListener('click', () => { editMd = false; draw(); });
-      $('#p-save')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: $('#p-md').value }) }); editMd = false; draw(); toast('Gespeichert'); });
-      $('#p-confirm')?.addEventListener('click', async () => { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: t.protokoll.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt' }) }); draw(); });
-      $('#p-copy')?.addEventListener('click', async () => { if (await copy(t.protokoll.content.protokoll_md)) toast('Kopiert'); });
+      $('#p-save')?.addEventListener('click', async () => {
+        const md = toMarkdown($('#prot'));
+        const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: md, style: curStyle }) });
+        t.protokolle[curStyle] = np; editMd = false; draw(); toast('Gespeichert');
+      });
+      $('#p-confirm')?.addEventListener('click', async () => {
+        const p = prot();
+        const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: p.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt', style: curStyle }) });
+        t.protokolle[curStyle] = np; draw(); toast(np.status === 'bestaetigt' ? 'Als geprüft markiert – steht so auch im Word-Export' : 'Markierung aufgehoben');
+      });
+      $('#p-copy')?.addEventListener('click', async () => { const md = prot().content.protokoll_md.replace(/\s*\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, ''); if (await copy(md)) toast('Protokoll kopiert'); });
+      sizePanes();
     }
+
+    function sizePanes() {
+      const g = $('.d-grid'); if (!g) return;
+      if (innerWidth <= 900) { g.style.height = ''; return; }
+      const top = g.getBoundingClientRect().top + window.scrollY;
+      const pl = $('.player'); const ph = pl ? pl.offsetHeight + 20 : 0;
+      g.style.height = Math.max(380, innerHeight - top - ph - 24) + 'px';
+    }
+    const onResize = () => sizePanes();
+    window.addEventListener('resize', onResize);
 
     function openMenu(anchor, html, onAct) {
       $$('.menu-list').forEach((m) => m.remove());
@@ -682,16 +753,17 @@
       if (onAct) m.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) { m.remove(); onAct(b.dataset.act); } });
     }
 
-    async function reload() { const p = t.protokoll; t = await api(`/api/transcripts/${id}`); if (!t.protokoll) t.protokoll = p; draw(); }
+    async function reload() { t = await api(`/api/transcripts/${id}`); if (!curStyle && t.protokoll) curStyle = t.protokoll.style; draw(); }
 
     // ---- KI-Aufgaben im Hintergrund mit Fortschritt
     function watchTask(onDone) {
-      clearInterval(taskPoll);
+      clearInterval(taskPoll); clearInterval(tick);
+      tick = setInterval(refreshTaskBar, 400);
       taskPoll = setInterval(async () => {
         let s; try { s = await api(`/api/transcripts/${t.id}/task`); } catch { return; }
-        task = { ...task, ...s };
-        if (s.status === 'running') { const bar = $('.progress-banner.task'); if (bar) bar.outerHTML = taskBar(); else draw(); return; }
-        clearInterval(taskPoll); taskPoll = null;
+        task = { ...task, ...s, _since: Date.now() };
+        if (s.status === 'running') { if ($('.progress-banner.task')) refreshTaskBar(); else draw(); return; }
+        clearInterval(taskPoll); taskPoll = null; clearInterval(tick); tick = null;
         const done = task; task = null;
         if (s.status === 'error') { draw(); toast(s.error, true); return; }
         await onDone(done);
@@ -741,7 +813,7 @@
       if (llm()) {
         try { await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); } catch (e) { toast(e.message, true); return; }
         task = { kind: 'protokoll', style, status: 'running', done: 0, total: 0, elapsed: 0 }; mTab = 'notes'; draw();
-        watchTask(async () => { t = await api(`/api/transcripts/${id}`); mTab = 'notes'; editMd = false; draw(); toast(`${STYLE_INFO[style][0]} erstellt`); });
+        watchTask(async () => { t = await api(`/api/transcripts/${id}`); curStyle = style; mTab = 'notes'; editMd = false; draw(); toast(`${STYLE_INFO[style][0]} erstellt`); });
         return;
       }
       const prompt = await api(`/api/transcripts/${t.id}/nova-prompt?style=${style}`);
@@ -756,7 +828,7 @@
       $('#m-x', card).onclick = modal.close;
       $('#m-copy', card).onclick = async () => { if (await copy(prompt)) toast('Kopiert'); };
       $('#m-ok', card).onclick = async () => {
-        try { t.protokoll = await api(`/api/transcripts/${t.id}/protokoll/import`, { method: 'POST', body: JSON.stringify({ style, protokoll_md: $('#m-in', card).value }) }); modal.close(); mTab = 'notes'; draw(); }
+        try { const np = await api(`/api/transcripts/${t.id}/protokoll/import`, { method: 'POST', body: JSON.stringify({ style, protokoll_md: $('#m-in', card).value }) }); t.protokolle = { ...(t.protokolle || {}), [style]: np }; t.protokoll = np; curStyle = style; modal.close(); mTab = 'notes'; draw(); }
         catch (e) { toast(e.message, true); }
       };
     }
@@ -765,7 +837,7 @@
     // Läuft schon eine KI-Aufgabe (z. B. nach Neuladen der Seite)? Dann Fortschritt weiter anzeigen.
     try {
       const s = await api(`/api/transcripts/${id}/task`);
-      if (s.status === 'running') { task = s; draw(); watchTask(async () => { t = await api(`/api/transcripts/${id}`); draw(); }); }
+      if (s.status === 'running') { task = { ...s, _since: Date.now() }; draw(); watchTask(async () => { t = await api(`/api/transcripts/${id}`); if (s.kind === 'protokoll' && s.style) curStyle = s.style; draw(); }); }
     } catch { }
     const poll = setInterval(async () => {
       if (!working()) return;
@@ -781,7 +853,7 @@
         }
       } catch { }
     }, 2000);
-    return () => { clearInterval(poll); clearInterval(taskPoll); };
+    return () => { clearInterval(poll); clearInterval(taskPoll); clearInterval(tick); window.removeEventListener('resize', onResize); };
   }
 
   // ================================================================ Start

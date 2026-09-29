@@ -160,29 +160,59 @@ def apply_korrekturen(text: str, korrekturen: list[dict] | None) -> str:
     return apply_glossar(text, compile_glossar(korrekturen))
 
 
+def parallel_blocks(blocks: list, fn, weight, workers: int = 2, progress=None) -> list:
+    """Blöcke gleichzeitig an die KI geben (der llama.cpp-Server rechnet mehrere Anfragen zusammen –
+    auf der CPU spürbar schneller als nacheinander). Fortschritt in Zeichen, Ergebnis in Blockreihenfolge."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    total = sum(weight(b) for b in blocks) or 1
+    done = 0
+    lock = threading.Lock()
+    results: list = [None] * len(blocks)
+    if progress:
+        progress(0, total)
+    if not blocks:
+        return results
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(blocks)))) as ex:
+        futs = {ex.submit(fn, i, b): i for i, b in enumerate(blocks)}
+        for f in as_completed(futs):
+            i = futs[f]
+            results[i] = f.result()
+            with lock:
+                done += weight(blocks[i])
+                if progress:
+                    progress(done, total)
+    return results
+
+
 def clean_segments(llm, segments: list[Segment], glossar: list[dict], context: list[Segment] | None = None,
-                   korrekturen: list[dict] | None = None, progress=None) -> dict[int, str]:
-    """Bereinigt eine Liste von Segmenten per KI (in Blöcken). → {idx: bereinigter Text}
+                   korrekturen: list[dict] | None = None, progress=None, workers: int = 2) -> dict[int, str]:
+    """Bereinigt eine Liste von Segmenten per KI (in Blöcken, bis zu `workers` gleichzeitig). → {idx: Text}
 
     Von Hand korrigierte Segmente (edited) werden nicht geschickt, dienen aber als Zusammenhang."""
-    result: dict[int, str] = {}
-    prev = list(context or [])
     todo = [s for s in segments if not s.edited]
     blocks = chunks(todo)
-    if progress:
-        progress(0, len(blocks))
-    for i, block in enumerate(blocks, 1):
+    by_pos = {s.idx: n for n, s in enumerate(segments)}
+    hint = glossar_hint(glossar, korrekturen)
+
+    def run(i: int, block: list[Segment]) -> dict[int, str]:
+        if i == 0:
+            prev = list(context or [])
+        else:
+            start = by_pos.get(block[0].idx, 0)
+            prev = segments[max(0, start - 3):start]
         ctx = ""
         if prev:
             ctx = "Vorheriger Zusammenhang (nicht ausgeben, nur zum Verständnis):\n" + \
                   "\n".join((s.clean or s.text) for s in prev[-3:]) + "\n\n"
-        user = f"{RULES}\n\n{glossar_hint(glossar, korrekturen)}\n{ctx}ZEILEN:\n{build_lines(block)}"
+        user = f"{RULES}\n\n{hint}\n{ctx}ZEILEN:\n{build_lines(block)}"
         answer = llm.chat(SYSTEM, user, temperature=0.0)
-        for idx, txt in parse_lines(answer).items():
-            result[idx] = apply_korrekturen(txt, korrekturen)
-        prev = block
-        if progress:
-            progress(i, len(blocks))
+        return {idx: apply_korrekturen(txt, korrekturen) for idx, txt in parse_lines(answer).items()}
+
+    result: dict[int, str] = {}
+    for part in parallel_blocks(blocks, run, lambda b: sum(len(s.text) for s in b), workers, progress):
+        result.update(part or {})
     return result
 
 
