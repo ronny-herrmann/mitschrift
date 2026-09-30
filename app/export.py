@@ -158,7 +158,7 @@ def _base_document(t: Transcript, titel: str, vorlage: str | None):
         _fill_marker(doc, "{{TELEFON}}", placeholder="Telefon eintragen", tag="telefon")
         return doc, True
     doc = Document()
-    doc.styles["Normal"].font.name = "Calibri"
+    doc.styles["Normal"].font.name = "Source Sans Pro"
     doc.styles["Normal"].font.size = Pt(11)
     doc.add_heading(titel.replace("\n", " – "), level=1)
     return doc, False

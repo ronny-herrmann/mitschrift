@@ -27,6 +27,24 @@ def set_text(p, text):
         run._r.insert(0, rpr)
 
 
+def sans_titel(p):
+    """Titelbox in Source Sans Pro Semibold statt der Serifenschrift der Zeichenvorlage „Hervorhebung“."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    rprs = [r._r.get_or_add_rPr() for r in p.runs]
+    ppr_rpr = p._p.pPr.find(qn("w:rPr")) if p._p.pPr is not None else None
+    if ppr_rpr is not None:
+        rprs.append(ppr_rpr)
+    for rpr in rprs:
+        rf = rpr.find(qn("w:rFonts"))
+        if rf is None:
+            rf = OxmlElement("w:rFonts")
+            rs = rpr.find(qn("w:rStyle"))
+            (rs.addnext(rf) if rs is not None else rpr.insert(0, rf))
+        for k in ("w:ascii", "w:hAnsi", "w:cs"):
+            rf.set(qn(k), "Source Sans Pro Semibold")
+
+
 def main(src, dst):
     d = Document(src)
     t0, t1 = d.tables[0], d.tables[1]
@@ -35,6 +53,7 @@ def main(src, dst):
     set_text(t0.cell(1, 3).paragraphs[0], "{{GZ}}")
     set_text(t0.cell(2, 3).paragraphs[0], "{{TELEFON}}")
     set_text(t1.cell(0, 0).paragraphs[0], "{{TITEL}}")
+    sans_titel(t1.cell(0, 0).paragraphs[0])
     body = d.element.body
     keep = {t0._tbl, t1._tbl}
     seen_t1 = False
