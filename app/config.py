@@ -105,6 +105,8 @@ class Settings:
     diarization_threshold: float = field(default_factory=lambda: _env_float("DIARIZATION_THRESHOLD", 0.7))
     # Feste Sprecherzahl, falls bekannt (0 = automatisch)
     diarization_speakers: int = field(default_factory=lambda: _env_int("DIARIZATION_SPEAKERS", 0))
+    # Rechenkerne für die Sprechererkennung (läuft in eigenem Prozess parallel zur Spracherkennung)
+    diarization_threads: int = field(default_factory=lambda: _env_int("DIARIZATION_THREADS", 3))
 
     # --- Protokoll-KI (optional, OpenAI-kompatibel: Ollama, vLLM, NOVA/BotBucket …) ----
     llm_base_url: str = field(default_factory=lambda: _env("LLM_BASE_URL", ""))

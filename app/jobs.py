@@ -6,7 +6,9 @@ Server kann nicht durch viele gleichzeitige Uploads überlastet werden.
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
+import multiprocessing
 import queue
 import threading
 import time
@@ -19,6 +21,22 @@ from .pipeline import Transcriber
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+# --- Sprechererkennung in eigenem Prozess ------------------------------------------------
+# sherpa-onnx gibt bei der Diarisierung die Python-Sperre (GIL) nicht frei. Im Hauptprozess
+# würde der ganze Server für die Dauer einfrieren (Seiten laden nicht, Live-Aufnahmen stocken).
+# Deshalb läuft sie in einem eigenen Prozess – und dadurch gleichzeitig mit der Spracherkennung.
+_DIAR = None
+
+
+def _diar_init(models_dir: str, threshold: float, speakers: int, threads: int) -> None:
+    global _DIAR
+    from .diarize import Diarizer
+    _DIAR = Diarizer(models_dir, threshold, speakers, threads)
+
+
+def _diar_turns(audio):
+    return _DIAR.turns(audio)
 
 
 class JobQueue:
@@ -106,18 +124,19 @@ class JobQueue:
             self._progress[tid] = (done, total)
 
         entries = self.glossar_for(tid)
+        # Sprechererkennung startet sofort im Hilfsprozess und läuft parallel zur Spracherkennung
+        fut = self._start_diarization(audio) if self.settings.diarization else None
         segments, secs = self.transcriber.transcribe_audio(audio, prog, entries=entries)
 
-        # Sprechererkennung
-        if self.settings.diarization and segments:
+        if fut is not None:
             self._progress[tid] = (-1, 0)  # Anzeige: „Sprecher werden erkannt“
-            diar = self._get_diarizer()
-            if diar is not None:
+            turns = self._finish_diarization(fut)
+            if turns and segments:
                 try:
                     from .diarize import assign_speakers
-                    segments = assign_speakers(segments, diar.turns(audio))
+                    segments = assign_speakers(segments, turns)
                 except Exception:
-                    log.exception("Sprechererkennung fehlgeschlagen – weiter ohne")
+                    log.exception("Sprecherzuordnung fehlgeschlagen – weiter ohne")
 
         # Manuell vergebene Namen aus der Live-Fassung übernehmen (nach Zeit-Überlappung)
         if refine:
@@ -156,20 +175,37 @@ class JobQueue:
         else:
             fields["model"] = model or t.model
         self.store.update_transcript(tid, **fields)
+        log.info("Fertig: %s – %.0f s Audio in %.0f s", tid, duration, time.time() - t0)
         if duration >= 20:   # Tempo lernen (gleitender Mittelwert), damit die Restzeit stimmt
             neu = (time.time() - t0) / duration
             self.store.set_setting("tempo:verarbeitung", round(0.6 * tempo + 0.4 * neu, 4))
         if self.settings.audio_delete_after_done:
             self.store.delete_audio(tid)
 
-    def _get_diarizer(self):
+    def _diar_pool(self):
+        """Ein dauerhafter Hilfsprozess für die Sprechererkennung (Modelle bleiben geladen)."""
         if self._diarizer is None and not self._diarizer_failed:
-            try:
-                from .diarize import Diarizer
-                s = self.settings
-                self._diarizer = Diarizer(s.models_dir, s.diarization_threshold, s.diarization_speakers)
-            except Exception:
-                self._diarizer_failed = True
-                log.exception("Sprechererkennung nicht verfügbar")
+            s = self.settings
+            self._diarizer = concurrent.futures.ProcessPoolExecutor(
+                max_workers=1, mp_context=multiprocessing.get_context("spawn"), initializer=_diar_init,
+                initargs=(str(s.models_dir), s.diarization_threshold, s.diarization_speakers, s.diarization_threads))
         return self._diarizer
-        log.info("Fertig: %s – %.1fs Audio in %.1fs (%.0f× Echtzeit)", tid, duration, secs, duration / max(secs, 0.01))
+
+    def _start_diarization(self, audio):
+        try:
+            pool = self._diar_pool()
+            return pool.submit(_diar_turns, audio) if pool else None
+        except Exception:
+            log.exception("Sprechererkennung konnte nicht gestartet werden")
+            return None
+
+    def _finish_diarization(self, fut):
+        try:
+            return fut.result(timeout=3600)
+        except concurrent.futures.process.BrokenProcessPool:
+            log.exception("Sprechererkennung nicht verfügbar (Hilfsprozess)")
+            self._diarizer_failed = True
+            self._diarizer = None
+        except Exception:
+            log.exception("Sprechererkennung fehlgeschlagen – weiter ohne")
+        return None

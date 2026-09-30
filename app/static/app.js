@@ -40,6 +40,16 @@
     close() { $('#modal').classList.add('hidden'); $('#modal-card').innerHTML = ''; },
   };
   $('#modal').addEventListener('click', (e) => { if (e.target.id === 'modal') modal.close(); });
+  // Sicherheitsabfrage im Stil der Anwendung (statt Browser-Dialog)
+  const confirmDialog = ({ title, text, ok = 'Löschen', danger = true }) => new Promise((resolve) => {
+    const c = modal.open(`<h2>${esc(title)}</h2><p class="confirm-text">${text}</p>
+      <div class="modal-actions"><button class="btn" data-no>Abbrechen</button><button class="btn ${danger ? 'danger' : 'primary'}" data-yes>${esc(ok)}</button></div>`);
+    const done = (v) => { modal.close(); resolve(v); };
+    $('[data-no]', c).onclick = () => done(false);
+    $('[data-yes]', c).onclick = () => done(true);
+    $('[data-no]', c).focus();
+  });
+  const DEL_TEXT = 'Transkript, Protokolle und Audioaufnahme werden <strong>endgültig</strong> vom Server gelöscht. Das lässt sich nicht rückgängig machen.';
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { modal.close(); $$('.menu-list').forEach((m) => m.remove()); } });
   const copy = async (text) => { try { await navigator.clipboard.writeText(text); return true; } catch { return false; } };
   const ICON = {
@@ -365,11 +375,16 @@
           <div class="ico">${ICON.check}</div>
           <div class="grow">
             <strong>Die Aufnahme ist gespeichert.</strong>
-            <div class="muted small">${m.refining ? 'Jetzt laufen automatisch: genaue Erkennung → Sprechererkennung. Sie können das Transkript sofort öffnen – es aktualisiert sich von selbst. Bereinigen und Protokoll starten Sie dort per Klick.' : 'Das Transkript ist fertig. Bereinigen und Protokoll starten Sie dort per Klick.'}</div>
+            <div class="muted small">${m.refining ? 'Jetzt laufen automatisch: genaue Erkennung → Sprechererkennung. Im Transkript sehen Sie den Fortschritt; das Ergebnis erscheint dort, sobald es fertig ist. Bereinigen und Protokoll starten Sie dort per Klick.' : 'Das Transkript ist fertig. Bereinigen und Protokoll starten Sie dort per Klick.'}</div>
           </div>
-          <div class="done-actions"><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a></div>
+          <div class="done-actions"><a class="btn primary" href="#/t/${m.transcript_id}">Transkript öffnen</a><button class="btn danger-outline" id="r-del">Transkript löschen</button><a class="btn" href="#/aufnahme" id="r-new">Neue Aufnahme</a></div>
         </div>`;
       $('#r-new').addEventListener('click', (e) => { e.preventDefault(); route(); });
+      $('#r-del').addEventListener('click', async () => {
+        if (!await confirmDialog({ title: 'Transkript endgültig löschen?', text: DEL_TEXT, ok: 'Endgültig löschen' })) return;
+        try { await api(`/api/transcripts/${m.transcript_id}`, { method: 'DELETE' }); } catch (e) { toast('Löschen fehlgeschlagen: ' + e.message, true); return; }
+        toast('Transkript und Audio gelöscht'); loadSide(); route();
+      });
       text.classList.add('finished');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       try { ws.close(); } catch { }
@@ -703,7 +718,7 @@
           </section>
           <aside class="notes" id="notes">${drawNotes()}</aside>
         </div>
-        ${t.has_audio ? `<div class="player"><audio id="audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio></div>` : ''}`}`;
+        ${t.has_audio ? `<div class="player"><audio id="audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio><a class="btn sm" href="/api/transcripts/${t.id}/audio?download=1" download title="Audiodatei herunterladen">${ICON.down}Audio herunterladen</a></div>` : ''}`}`;
       bind();
     }
 
@@ -869,13 +884,28 @@
         ${hasClean() ? '<button data-act="unclean">KI-Bereinigung verwerfen</button>' : ''}
         <button data-act="delaudio" ${t.has_audio ? '' : 'disabled'}>Nur Audio löschen</button><hr>
         <button data-act="delete" class="danger">Aufnahme endgültig löschen</button>`, async (act) => {
-        if (act === 'delete') { if (!confirm('Transkript und Audio endgültig löschen?')) return; await api(`/api/transcripts/${t.id}`, { method: 'DELETE' }); toast('Gelöscht'); loadSide(); location.hash = '#/aufnahme'; }
-        if (act === 'delaudio') { if (!confirm('Audio endgültig löschen? Das Transkript bleibt erhalten.')) return; await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw(); }
+        if (act === 'delete') { if (!await confirmDialog({ title: 'Transkript endgültig löschen?', text: DEL_TEXT, ok: 'Endgültig löschen' })) return; await api(`/api/transcripts/${t.id}`, { method: 'DELETE' }); toast('Gelöscht'); loadSide(); location.hash = '#/aufnahme'; }
+        if (act === 'delaudio') { if (!await confirmDialog({ title: 'Audioaufnahme endgültig löschen?', text: 'Die Audiodatei wird <strong>endgültig</strong> vom Server gelöscht. Transkript und Protokolle bleiben erhalten; Abspielen und Nachhören ist danach nicht mehr möglich.', ok: 'Audio löschen' })) return; await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw(); }
         if (act === 'unclean') { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'DELETE' }); await reload(); toast('Bereinigung verworfen – Original wird angezeigt (Ihre eigenen Korrekturen bleiben)'); }
       }));
       if (working()) { $('#d-meta').addEventListener('click', editMeta); return; }   // während der Verarbeitung nur Fortschritt
       $$('[data-mtab]').forEach((b) => b.addEventListener('click', () => { mTab = b.dataset.mtab; draw(); }));
-      $$('[data-view]').forEach((b) => b.addEventListener('click', () => { showClean = b.dataset.view === 'clean'; draw(); }));
+      // Bereinigt ↔ Original: nur den Text tauschen und an derselben Stelle bleiben
+      $$('[data-view]').forEach((b) => b.addEventListener('click', () => {
+        const nv = b.dataset.view === 'clean'; if (nv === showClean) return;
+        const box = $('#tx'), top = box.getBoundingClientRect().top;
+        const vtop = Math.max(top, 0);
+        const anchor = $$('.seg', box).find((el) => el.getBoundingClientRect().bottom > vtop + 4);
+        const before = anchor ? anchor.getBoundingClientRect().top : 0;
+        showClean = nv;
+        $$('[data-view]').forEach((x) => x.classList.toggle('on', (x.dataset.view === 'clean') === showClean));
+        box.innerHTML = drawBlocks(); bindSegs(); showHit(false);
+        const again = anchor && $(`.seg[data-idx="${anchor.dataset.idx}"]`, box);
+        if (again) {
+          const d = again.getBoundingClientRect().top - before;
+          if (box.scrollHeight > box.clientHeight + 2) box.scrollTop += d; else window.scrollBy(0, d);
+        }
+      }));
       bindSegs();
       const qi = $('#tx-q');
       const redrawTx = () => { $('#tx').innerHTML = drawBlocks(); bindSegs(); showHit(!!q); };

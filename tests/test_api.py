@@ -376,3 +376,13 @@ def test_word_export_uses_letterhead(client):
     assert "{{" not in text
     assert "Herrmann" not in text and "Smartphone" not in text
     assert d.sections[0].header is not None
+
+
+def test_audio_download(client):
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": "Audio-Test"}).json()["id"]
+    wait_done(client, tid)
+    r = client.get(f"/api/transcripts/{tid}/audio", params={"download": 1})
+    assert r.status_code == 200 and r.content[:4] == b"RIFF"
+    assert "attachment" in r.headers["content-disposition"] and "Audio-Test - Audio.wav" in r.headers["content-disposition"]
+    assert "attachment" not in client.get(f"/api/transcripts/{tid}/audio").headers.get("content-disposition", "")

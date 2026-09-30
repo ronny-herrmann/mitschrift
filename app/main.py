@@ -508,10 +508,13 @@ async def delete_audio(tid: str):
 
 
 @app.get("/api/transcripts/{tid}/audio", dependencies=[Depends(require_auth)])
-async def get_audio(tid: str):
+async def get_audio(tid: str, download: bool = False):
     t = _get_or_404(tid)
     if not t.audio_path or not Path(t.audio_path).exists():
         raise HTTPException(404, "Kein Audio (gelöscht oder nicht vorhanden)")
+    if download:
+        ext = Path(t.audio_path).suffix.lstrip(".").lower() or "wav"
+        return FileResponse(t.audio_path, headers=_download_headers(t.title, "Audio", ext))
     return FileResponse(t.audio_path)
 
 
