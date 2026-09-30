@@ -83,6 +83,7 @@
         banner.classList.remove('hidden');
       }
 
+      const ms = $('#m-sys'); if (ms) { ms.className = 'm-sys ' + $('#sys').className.replace('sys', '').trim(); ms.title = $('#sys-txt').textContent; }
       document.dispatchEvent(new CustomEvent('health'));
     } catch {
       $('#sys').className = 'sys err'; $('#sys-txt').textContent = 'Server nicht erreichbar';
@@ -96,16 +97,19 @@
     const n = userName();
     $('#user-av').textContent = n ? n.split(/\s+/).map((w) => w[0]).join('').slice(0, 2).toUpperCase() : '?';
     $('#user-name').textContent = n || 'Testzugang';
+    $('#m-user-av').textContent = $('#user-av').textContent;
   }
-  $('#user-btn').addEventListener('click', (e) => {
+  function openUserMenu(e, mobile) {
+    e.stopPropagation();
     $$('.menu-list').forEach((m) => m.remove());
-    const m = document.createElement('div'); m.className = 'menu-list up';
-    m.innerHTML = `<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
+    const m = document.createElement('div'); m.className = 'menu-list ' + (mobile ? 'down' : 'up');
+    m.innerHTML = `${mobile ? `<div class="menu-status">${esc($('#sys-txt').textContent)}</div>` : ''}<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
       <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="pw">Zugangspasswort ändern</button><button data-act="logout">Abmelden</button>' : ''}`;
-    e.currentTarget.parentElement.appendChild(m);
+    (mobile ? document.body : e.currentTarget.parentElement).appendChild(m);
     setTimeout(() => document.addEventListener('click', function close(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
     m.addEventListener('click', async (ev) => {
-      const b = ev.target.closest('[data-act]'); m.remove(); if (!b) return;
+      if (ev.target.closest('a')) { m.remove(); return; }
+      const b = ev.target.closest('[data-act]'); if (!b) return; m.remove();
       if (b.dataset.act === 'name') {
         const n = prompt('Ihr Name (nur für die Anzeige hier, wird nicht gespeichert):', userName());
         if (n !== null) { try { localStorage.setItem('protokollant-name', n.trim()); } catch { } drawUser(); }
@@ -113,7 +117,9 @@
       if (b.dataset.act === 'logout') { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; }
       if (b.dataset.act === 'pw') passwortDialog();
     });
-  });
+  }
+  $('#user-btn').addEventListener('click', (e) => openUserMenu(e, false));
+  $('#m-user').addEventListener('click', (e) => openUserMenu(e, true));
   drawUser();
 
   function passwortDialog() {
@@ -170,6 +176,7 @@
     if (recordingActive && !location.hash.startsWith('#/aufnahme')) {
       if (!confirm('Die Aufnahme läuft noch. Wirklich verlassen? Die Aufnahme wird dann beendet und gespeichert.')) { history.back(); return; }
     }
+    $$('.menu-list').forEach((m) => m.remove());
     if (cleanup) { try { cleanup(); } catch { } cleanup = null; }
     const hash = location.hash.replace(/^#\/?/, '') || 'aufnahme';
     const [name, arg] = hash.split('/');
@@ -539,7 +546,7 @@
       </div>`;
     const body = $('#gl'), filter = $('#gl-filter');
     let all = await api('/api/glossar');
-    const row = (e = {}) => `<tr data-amt="${esc(e.amt || '')}"><td><input type="text" value="${esc(e.von)}" placeholder="z. B. Echsel"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><input type="text" class="amt" value="${esc(e.amt || '')}" placeholder="alle"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
+    const row = (e = {}) => `<tr data-amt="${esc(e.amt || '')}"><td data-l="Wird erkannt als"><input type="text" value="${esc(e.von)}" placeholder="z. B. Echsel" aria-label="Wird erkannt als"></td><td data-l="Richtig"><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel" aria-label="Richtig"></td><td data-l="Amt"><input type="text" class="amt" value="${esc(e.amt || '')}" placeholder="alle" aria-label="Amt"></td><td><button class="btn ghost sm" data-del aria-label="Eintrag entfernen">✕</button></td></tr>`;
     const collect = () => $$('tr', body).map((tr) => { const [a, b, c] = $$('input', tr); return { von: a.value, zu: b.value, amt: c.value }; });
     const fillFilter = () => {
       const aemter = [...new Set(all.map((e) => e.amt).filter(Boolean))].sort();
@@ -687,7 +694,7 @@
 
       view.innerHTML = `
         <div class="d-head">
-          <input class="d-title" id="d-title" value="${esc(t.title)}" aria-label="Titel bearbeiten">
+          <textarea class="d-title" id="d-title" rows="1" aria-label="Titel bearbeiten">${esc(t.title)}</textarea>
           <div class="menu"><button class="btn" id="d-export">${ICON.down}Export</button></div>
           <div class="menu"><button class="btn ghost" id="d-more" aria-label="Weitere Aktionen">${ICON.more}</button></div>
         </div>
@@ -703,8 +710,8 @@
         </div>
         ${working() ? procHtml() : `${taskBar()}
         <div class="ai-bar">
-          <button class="btn ai" id="ai-clean" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.spark}${hasClean() ? 'Erneut bereinigen' : 'Text bereinigen'}</button>
-          <div class="menu"><button class="btn ai" id="ai-sum" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.doc}Protokoll erstellen ▾</button></div>
+          <button class="btn ai" id="ai-clean" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.spark}<span class="t-lg">${hasClean() ? 'Erneut bereinigen' : 'Text bereinigen'}</span><span class="t-sm">Bereinigen</span></button>
+          <div class="menu"><button class="btn ai" id="ai-sum" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.doc}<span class="t-lg">Protokoll erstellen ▾</span><span class="t-sm">Protokoll ▾</span></button></div>
           <span class="note">${llm() ? 'Die KI korrigiert nur und erfindet nichts · Ihre eigenen Korrekturen haben Vorrang' : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
         </div>
         <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">Protokoll</button></div></div>
@@ -864,6 +871,10 @@
     };
 
     function bind() {
+      const ti = $('#d-title'); const fit = () => { ti.style.height = 'auto'; ti.style.height = ti.scrollHeight + 'px'; };
+      fit(); requestAnimationFrame(fit);
+      ti.addEventListener('input', () => { ti.value = ti.value.replace(/\n/g, ' '); fit(); });
+      ti.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ti.blur(); } });
       $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); loadSide(); });
       const ex = (q) => `/api/transcripts/${t.id}/export?${q}`;
       $('#d-export').addEventListener('click', (e) => {
@@ -1018,13 +1029,20 @@
       const pl = $('.player'); const ph = pl ? pl.offsetHeight + 20 : 0;
       g.style.height = Math.max(380, innerHeight - top - ph - 24) + 'px';
     }
-    const onResize = () => sizePanes();
+    const onResize = () => { sizePanes(); const ti = $('#d-title'); if (ti) { ti.style.height = 'auto'; ti.style.height = ti.scrollHeight + 'px'; } };
     window.addEventListener('resize', onResize);
 
     function openMenu(anchor, html, onAct) {
       $$('.menu-list').forEach((m) => m.remove());
       const m = document.createElement('div'); m.className = 'menu-list'; m.innerHTML = html;
       anchor.parentElement.appendChild(m);
+      // nie über den Bildschirmrand hinaus (Tablet/kleine Fenster); auf dem Handy ist es ein Bottom-Sheet
+      if (getComputedStyle(m).position === 'absolute') {
+        const r = m.getBoundingClientRect();
+        if (r.left < 8) { m.style.right = 'auto'; m.style.left = '0'; }
+        const r2 = m.getBoundingClientRect();
+        if (r2.right > innerWidth - 8) { m.style.left = 'auto'; m.style.right = '0'; }
+      }
       setTimeout(() => document.addEventListener('click', function close(e) { if (!m.contains(e.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
       if (onAct) m.addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) { m.remove(); onAct(b.dataset.act); } });
     }
