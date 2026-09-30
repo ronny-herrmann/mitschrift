@@ -8,6 +8,14 @@ from datetime import datetime
 from .store import Transcript
 
 
+def fmt_dauer(sec: float) -> str:
+    """1:09 Min. bzw. 1:02:03 Std. – für Menschen lesbar."""
+    sec = int(round(sec or 0))
+    h, rest = divmod(sec, 3600)
+    m, s = divmod(rest, 60)
+    return f"{h}:{m:02d}:{s:02d} Std." if h else f"{m}:{s:02d} Min."
+
+
 def local_dt(iso: str) -> str:
     """Zeitstempel (UTC gespeichert) in deutscher Ortszeit anzeigen."""
     from zoneinfo import ZoneInfo
@@ -94,26 +102,108 @@ def _md_inline(p, text: str) -> None:
             p.add_run(part)
 
 
+VORLAGEN_DIR = __import__("pathlib").Path(__file__).parent / "templates"
+
+
+def vorlagen() -> list[str]:
+    """Verfügbare Word-Briefköpfe (Dateinamen ohne Endung)."""
+    return sorted(p.stem for p in VORLAGEN_DIR.glob("*.docx")) if VORLAGEN_DIR.exists() else []
+
+
+def _sdt(paragraph, placeholder: str, tag: str) -> None:
+    """Ausfüllbares Feld (Word-Inhaltssteuerelement) mit grauem Platzhaltertext einfügen."""
+    from docx.oxml import parse_xml
+    xml = ('<w:sdt xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+           f'<w:sdtPr><w:alias w:val="{placeholder}"/><w:tag w:val="{tag}"/><w:showingPlcHdr/><w:text/></w:sdtPr>'
+           f'<w:sdtContent><w:r><w:rPr><w:color w:val="808080"/></w:rPr><w:t xml:space="preserve">{placeholder}</w:t></w:r>'
+           '</w:sdtContent></w:sdt>')
+    paragraph._p.append(parse_xml(xml))
+
+
+def _fill_marker(doc, marker: str, text: str | None = None, placeholder: str = "", tag: str = "") -> None:
+    """Platzhalter {{…}} in den Tabellen der Vorlage ersetzen – durch Text oder ein ausfüllbares Feld."""
+    for tbl in doc.tables:
+        for row in tbl.rows:
+            for cell in row.cells:
+                for p in cell.paragraphs:
+                    if marker not in p.text:
+                        continue
+                    runs = p.runs
+                    if text is not None:
+                        for r in runs[1:]:
+                            r._r.getparent().remove(r._r)
+                        lines = text.split("\n")
+                        runs[0].text = lines[0]
+                        for extra in lines[1:]:
+                            runs[0].add_break()
+                            runs[0].add_text(extra)
+                    else:
+                        for r in runs:
+                            r._r.getparent().remove(r._r)
+                        _sdt(p, placeholder, tag)
+
+
+def _base_document(t: Transcript, titel: str, vorlage: str | None):
+    """Neues Dokument – mit Heilbronner Briefkopf, wenn eine Vorlage vorhanden ist."""
+    from docx import Document
+    from docx.shared import Pt
+    name = vorlage if vorlage in vorlagen() else (vorlagen()[0] if vorlagen() else None)
+    if name:
+        doc = Document(str(VORLAGEN_DIR / f"{name}.docx"))
+        datum = local_dt(t.created_at)[:10] if t.created_at else ""
+        _fill_marker(doc, "{{DATUM}}", datum)
+        _fill_marker(doc, "{{TITEL}}", titel)
+        _fill_marker(doc, "{{AMT}}", placeholder="Amt eintragen", tag="amt")
+        _fill_marker(doc, "{{GZ}}", placeholder="Gz. eintragen", tag="gz")
+        _fill_marker(doc, "{{TELEFON}}", placeholder="Telefon eintragen", tag="telefon")
+        return doc, True
+    doc = Document()
+    doc.styles["Normal"].font.name = "Calibri"
+    doc.styles["Normal"].font.size = Pt(11)
+    doc.add_heading(titel.replace("\n", " – "), level=1)
+    return doc, False
+
+
+def _bullet(doc, text: str, briefkopf: bool):
+    from docx.shared import Cm
+    if briefkopf:
+        p = doc.add_paragraph(style="List Paragraph")
+        p.paragraph_format.left_indent = Cm(0.6)
+        p.paragraph_format.first_line_indent = Cm(-0.4)
+        p.add_run("•\u00a0\u00a0")
+    else:
+        p = doc.add_paragraph(style="List Bullet")
+    _md_inline(p, text)
+    return p
+
+
 def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str = "Zusammenfassung",
             fliesstext: bool = False, nur_protokoll: bool = False, pruefstatus: str = "",
-            teilnehmende: list[str] | None = None) -> bytes:
-    from docx import Document
-    from docx.shared import Pt, RGBColor
+            teilnehmende: list[str] | None = None, vorlage: str | None = None) -> bytes:
+    from docx.shared import Cm, Pt, RGBColor
 
-    doc = Document()
-    style = doc.styles["Normal"]
-    style.font.name = "Calibri"
-    style.font.size = Pt(11)
+    art = protokoll_name if protokoll_md else ("Fließtext" if fliesstext else "Transkript")
+    doc, briefkopf = _base_document(t, f"{art}\n{t.title}", vorlage)
 
-    doc.add_heading(t.title, level=1)
+    # Sitzungsdaten als Kopfblock (Protokollführung ist ausfüllbar)
     created = local_dt(t.created_at) if t.created_at else ""
-    meta = doc.add_paragraph(f"Aufgenommen: {created}   ·   Dauer: {fmt_time(t.duration)}   ·   Spracherkennung: {t.model}")
-    meta.runs[0].font.size = Pt(9)
-    meta.runs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
+    if briefkopf:
+        doc.add_paragraph()  # Abstand zum Titelkasten
+    zeilen = [("Sitzung", t.title), ("Datum und Uhrzeit", created), ("Dauer", fmt_dauer(t.duration))]
     if teilnehmende:
-        tp = doc.add_paragraph()
-        tp.add_run("Teilnehmende: ").bold = True
-        tp.add_run(", ".join(teilnehmende))
+        zeilen.append(("Teilnehmende", ", ".join(teilnehmende)))
+    for label, wert in zeilen + [("Protokollführung", None)]:
+        p = doc.add_paragraph()
+        p.paragraph_format.tab_stops.add_tab_stop(Cm(4.5))
+        p.paragraph_format.space_after = Pt(2)
+        p.add_run(f"{label}:\t").bold = True
+        if wert is None:
+            _sdt(p, "Name eintragen", "protokollfuehrung")
+        else:
+            p.add_run(wert)
+    hinweis = doc.add_paragraph(f"Automatisch erstellt mit dem Protokollanten der Stadt Heilbronn · Spracherkennung: {t.model}")
+    hinweis.runs[0].font.size = Pt(8)
+    hinweis.runs[0].font.color.rgb = RGBColor(0x80, 0x80, 0x80)
 
     if fliesstext:
         # Absätze je Sprecherwechsel, ohne Zeitmarken
@@ -128,7 +218,8 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
             doc.add_paragraph(" ".join(buf))
     else:
         if protokoll_md:
-            doc.add_heading(protokoll_name, level=2)
+            if not briefkopf:  # im Briefkopf steht die Art schon im Titelkasten
+                doc.add_heading(protokoll_name, level=2)
             note = doc.add_paragraph((pruefstatus + ". " if pruefstatus else "")
                                      + "Jede Aussage wurde automatisch gegen das Transkript geprüft.")
             note.runs[0].font.size = Pt(9)
@@ -144,7 +235,7 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                 elif line.startswith("# "):
                     doc.add_heading(line[2:], level=2)
                 elif line.startswith(("- ", "* ")):
-                    _md_inline(doc.add_paragraph(style="List Bullet"), line[2:])
+                    _bullet(doc, line[2:], briefkopf)
                 else:
                     _md_inline(doc.add_paragraph(), line)
             if nur_protokoll:

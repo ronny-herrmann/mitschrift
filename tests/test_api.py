@@ -334,3 +334,45 @@ def test_glossar_per_amt_and_import(client):
     punkte = client.post("/api/tagesordnung/lesen", files={"file": ("to.docx", b2.getvalue(), "application/octet-stream")}).json()
     assert punkte[-2:] == ["Begrüßung", "Haushalt 2027"]
     client.put("/api/glossar", json={"eintraege": []})
+
+
+def test_change_access_password(client, monkeypatch):
+    from app import auth, main
+    from app.config import settings
+    monkeypatch.setattr(settings, "access_password", "alt-passwort-1")
+    client.cookies.clear()
+    try:
+        r = client.post("/api/login", json={"password": "alt-passwort-1"})
+        client.cookies.set(auth.COOKIE, r.cookies[auth.COOKIE])
+        alt_cookie = r.cookies[auth.COOKIE]
+        assert client.post("/api/zugang", json={"alt": "falsch", "neu": "neues-passwort-2"}).status_code == 403
+        assert client.post("/api/zugang", json={"alt": "alt-passwort-1", "neu": "kurz"}).status_code == 400
+        r = client.post("/api/zugang", json={"alt": "alt-passwort-1", "neu": "neues-passwort-2"})
+        assert r.status_code == 204
+        client.cookies.set(auth.COOKIE, r.cookies[auth.COOKIE])
+        assert client.get("/api/transcripts").status_code == 200
+        # alte Sitzungen sind abgemeldet, altes Passwort gilt nicht mehr
+        client.cookies.set(auth.COOKIE, alt_cookie)
+        assert client.get("/api/transcripts").status_code == 401
+        assert client.post("/api/login", json={"password": "alt-passwort-1"}).status_code == 401
+        assert client.post("/api/login", json={"password": "neues-passwort-2"}).status_code == 204
+    finally:
+        main.state.store.set_setting("zugang_passwort", None)
+        client.cookies.clear()
+        auth._failures.clear()
+
+
+def test_word_export_uses_letterhead(client):
+    import io
+    import docx
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": "Briefkopf-Test"}).json()["id"]
+    wait_done(client, tid)
+    r = client.get(f"/api/transcripts/{tid}/export", params={"format": "docx"})
+    assert r.status_code == 200
+    d = docx.Document(io.BytesIO(r.content))
+    text = "\n".join(p.text for p in d.paragraphs) + "\n".join(c.text for tb in d.tables for row in tb.rows for c in row.cells)
+    assert "Briefkopf-Test" in text
+    assert "{{" not in text
+    assert "Herrmann" not in text and "Smartphone" not in text
+    assert d.sections[0].header is not None

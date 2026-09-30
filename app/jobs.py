@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from pathlib import Path
 
 from . import bereinigung
@@ -31,6 +32,7 @@ class JobQueue:
         self._diarizer_failed = False
         self._q: queue.Queue[str] = queue.Queue()
         self._progress: dict[str, tuple[int, int]] = {}
+        self._started: dict[str, tuple[float, float]] = {}   # tid → (Startzeit, geschätzte Dauer in s)
         self._thread = threading.Thread(target=self._run, name="jobs", daemon=True)
         self._thread.start()
 
@@ -39,6 +41,20 @@ class JobQueue:
 
     def progress(self, transcript_id: str) -> tuple[int, int] | None:
         return self._progress.get(transcript_id)
+
+    TEMPO_START = 0.12   # Sekunden Rechenzeit je Sekunde Audio (genaue Erkennung + Sprecher), wird gelernt
+
+    def info(self, transcript_id: str) -> dict | None:
+        """Fortschritt für die Anzeige: Schritt, vergangene Zeit, geschätzte Gesamtdauer."""
+        p = self._progress.get(transcript_id)
+        st = self._started.get(transcript_id)
+        if not p and not st:
+            return None
+        d = {"done": p[0], "total": p[1]} if p else {"done": 0, "total": 0}
+        if st:
+            d["elapsed"] = round(time.time() - st[0], 1)
+            d["eta"] = round(st[1], 1)
+        return d
 
     @property
     def pending(self) -> int:
@@ -70,6 +86,7 @@ class JobQueue:
                     self.store.update_transcript(tid, status="error", error=str(e)[:500])
             finally:
                 self._progress.pop(tid, None)
+                self._started.pop(tid, None)
                 self._q.task_done()
 
     def _process(self, tid: str) -> None:
@@ -78,9 +95,12 @@ class JobQueue:
             return
         refine = t.status == "refining"
         log.info("%s %s (%s)", "Verfeinere" if refine else "Transkribiere", tid, t.title)
+        t0 = time.time()
         audio = decode_to_pcm16k(t.audio_path)
         duration = len(audio) / 16_000
         self.store.update_transcript(tid, duration=round(duration, 2))
+        tempo = float(self.store.get_setting("tempo:verarbeitung", self.TEMPO_START))
+        self._started[tid] = (t0, max(4.0, duration * tempo + 2.0))
 
         def prog(done: int, total: int) -> None:
             self._progress[tid] = (done, total)
@@ -136,6 +156,9 @@ class JobQueue:
         else:
             fields["model"] = model or t.model
         self.store.update_transcript(tid, **fields)
+        if duration >= 20:   # Tempo lernen (gleitender Mittelwert), damit die Restzeit stimmt
+            neu = (time.time() - t0) / duration
+            self.store.set_setting("tempo:verarbeitung", round(0.6 * tempo + 0.4 * neu, 4))
         if self.settings.audio_delete_after_done:
             self.store.delete_audio(tid)
 

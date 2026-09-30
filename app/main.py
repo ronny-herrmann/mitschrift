@@ -176,6 +176,7 @@ def _load_models_once() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     state.store = Store(settings.db_path)
+    auth.set_store(state.store)
     if not auth.enabled():
         log.warning("ACCESS_PASSWORD ist leer – keine Anmeldung! Nur für localhost geeignet.")
     import threading
@@ -228,6 +229,30 @@ async def login(body: LoginBody, request: Request):
     if not auth.enabled() or not auth.check_password(body.password, client):
         await asyncio.sleep(1.0)
         raise HTTPException(401, "Passwort falsch")
+    resp = Response(status_code=204)
+    resp.set_cookie(auth.COOKIE, auth.make_token(), max_age=settings.session_hours * 3600, httponly=True,
+                    samesite="strict", secure=settings.cookie_secure, path="/")
+    return resp
+
+
+class PasswortBody(BaseModel):
+    alt: str
+    neu: str
+
+
+@app.post("/api/zugang", dependencies=[Depends(require_auth)])
+async def passwort_aendern(body: PasswortBody, request: Request):
+    """Zugangspasswort dieser Instanz ändern (Test und Produktiv getrennt). Alle anderen werden abgemeldet."""
+    client = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0].strip()
+    if not auth.enabled():
+        raise HTTPException(400, "Für diese Instanz ist kein Zugangspasswort eingerichtet.")
+    if not auth.check_password(body.alt, client):
+        await asyncio.sleep(1.0)
+        raise HTTPException(403, "Das bisherige Passwort stimmt nicht.")
+    neu = body.neu
+    if len(neu) < 10:
+        raise HTTPException(400, "Das neue Passwort muss mindestens 10 Zeichen haben.")
+    auth.set_password(neu)
     resp = Response(status_code=204)
     resp.set_cookie(auth.COOKIE, auth.make_token(), max_age=settings.session_hours * 3600, httponly=True,
                     samesite="strict", secure=settings.cookie_secure, path="/")
@@ -375,9 +400,9 @@ async def list_transcripts():
     items = []
     for t in state.store.list_transcripts():
         d = t.to_dict(with_segments=False)
-        p = state.jobs.progress(t.id) if state.jobs else None
+        p = state.jobs.info(t.id) if state.jobs else None
         if p:
-            d["progress"] = {"done": p[0], "total": p[1]}
+            d["progress"] = p
         items.append(d)
     return items
 
@@ -386,9 +411,9 @@ async def list_transcripts():
 async def get_transcript(tid: str):
     t = _get_or_404(tid)
     d = t.to_dict()
-    p = state.jobs.progress(tid) if state.jobs else None
+    p = state.jobs.info(tid) if state.jobs else None
     if p:
-        d["progress"] = {"done": p[0], "total": p[1]}
+        d["progress"] = p
     d["protokoll"] = state.store.get_protokoll(tid)
     d["protokolle"] = state.store.get_protokolle(tid)
     d["meta"] = _meta(tid)
@@ -527,7 +552,7 @@ DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.docu
 
 @app.get("/api/transcripts/{tid}/export", dependencies=[Depends(require_auth)])
 async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: bool = True, protokoll: bool = False,
-                 style: str = ""):
+                 style: str = "", vorlage: str = ""):
     """format: docx (Transkript, mit protokoll=1 zusätzlich das Protokoll), protokoll (nur Protokoll, Word),
     fliesstext (Word ohne Zeitmarken), txt, md, srt. style wählt das Protokoll (Standard: zuletzt erstellt)."""
     t = _get_or_404(tid)
@@ -546,13 +571,13 @@ async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: boo
                 raise HTTPException(404, "Noch kein Protokoll vorhanden")
         pname = STYLES.get(p["style"], "Protokoll") if p else ""
         if format == "fliesstext":
-            data, suffix = to_docx(t, fliesstext=True), "Fliesstext"
+            data, suffix = to_docx(t, fliesstext=True, teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage), "Fliesstext"
         elif format == "protokoll":
             data, suffix = to_docx(t, p["content"]["protokoll_md"], pname, nur_protokoll=True, pruefstatus=_pruefstatus(p),
-                                   teilnehmende=_meta(tid)["teilnehmende"]), pname
+                                   teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage), pname
         else:
             data = to_docx(t, p["content"]["protokoll_md"] if p else None, pname, pruefstatus=_pruefstatus(p) if p else "",
-                           teilnehmende=_meta(tid)["teilnehmende"])
+                           teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage)
             suffix = f"Transkript und {pname}" if p else "Transkript"
         return Response(data, media_type=DOCX_TYPE, headers=_download_headers(t.title, suffix, "docx"))
     raise HTTPException(400, "format muss txt, md, srt, docx, protokoll oder fliesstext sein")

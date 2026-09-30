@@ -12,6 +12,7 @@
     const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
     return (h ? h + ':' + String(m).padStart(2, '0') : String(m).padStart(2, '0')) + ':' + String(s).padStart(2, '0');
   };
+  const fmtLen = (sec) => { sec = Math.max(0, Math.round(sec || 0)); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = String(sec % 60).padStart(2, '0'); return h ? `${h}:${String(m).padStart(2, '0')}:${x} Std.` : `${m}:${x} Min.`; };
   const fmtDur = (sec) => { sec = Math.round(sec || 0); if (sec < 60) return sec + ' s'; const m = Math.round(sec / 60); return m < 60 ? m + ' min' : Math.floor(m / 60) + ' h ' + (m % 60) + ' min'; };
   const fmtDate = (iso, opts = { dateStyle: 'medium', timeStyle: 'short' }) => { try { return new Date(iso).toLocaleString('de-DE', opts); } catch { return iso; } };
   const COLORS = ['#006EB7', '#E73039', '#16A34A', '#9333EA', '#EA580C', '#0891B2', '#DB2777', '#65A30D'];
@@ -89,8 +90,8 @@
   $('#user-btn').addEventListener('click', (e) => {
     $$('.menu-list').forEach((m) => m.remove());
     const m = document.createElement('div'); m.className = 'menu-list up';
-    m.innerHTML = `<a href="#/faq">Häufige Fragen</a><a href="#/infos">Infos <span class="side-badge">intern</span></a><hr>
-      <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="logout">Abmelden</button>' : ''}`;
+    m.innerHTML = `<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
+      <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="pw">Zugangspasswort ändern</button><button data-act="logout">Abmelden</button>' : ''}`;
     e.currentTarget.parentElement.appendChild(m);
     setTimeout(() => document.addEventListener('click', function close(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
     m.addEventListener('click', async (ev) => {
@@ -100,9 +101,31 @@
         if (n !== null) { try { localStorage.setItem('protokollant-name', n.trim()); } catch { } drawUser(); }
       }
       if (b.dataset.act === 'logout') { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; }
+      if (b.dataset.act === 'pw') passwortDialog();
     });
   });
   drawUser();
+
+  function passwortDialog() {
+    const c = modal.open(`<h2>Zugangspasswort ändern</h2>
+      <p class="muted small">Gilt für alle, die diesen Zugang nutzen. Danach sind alle anderen Geräte abgemeldet und brauchen das neue Passwort.</p>
+      <label class="field-label"><span>Bisheriges Passwort</span><input type="password" id="pw-alt" autocomplete="current-password"></label>
+      <label class="field-label"><span>Neues Passwort (mindestens 10 Zeichen)</span><input type="password" id="pw-neu" autocomplete="new-password"></label>
+      <label class="field-label"><span>Neues Passwort wiederholen</span><input type="password" id="pw-neu2" autocomplete="new-password"></label>
+      <p class="small" id="pw-err"></p>
+      <div class="modal-actions"><button class="btn" data-x>Abbrechen</button><button class="btn primary" id="pw-ok">Passwort ändern</button></div>`);
+    $('[data-x]', c).onclick = modal.close;
+    $('#pw-alt', c).focus();
+    $('#pw-ok', c).onclick = async () => {
+      const alt = $('#pw-alt', c).value, neu = $('#pw-neu', c).value, neu2 = $('#pw-neu2', c).value, err = $('#pw-err', c);
+      if (neu.length < 10) { err.textContent = 'Das neue Passwort braucht mindestens 10 Zeichen.'; return; }
+      if (neu !== neu2) { err.textContent = 'Die beiden neuen Passwörter stimmen nicht überein.'; return; }
+      try {
+        await api('/api/zugang', { method: 'POST', body: JSON.stringify({ alt, neu }) });
+        modal.close(); toast('Passwort geändert. Andere Geräte müssen sich neu anmelden.');
+      } catch (e) { err.textContent = e.status === 403 ? 'Das bisherige Passwort stimmt nicht.' : e.message; }
+    };
+  }
 
   // ================================================================ Seitenleiste
   let sideItems = [];
@@ -462,6 +485,16 @@
     return `Schritt 1 von ${n}: genaue Erkennung … ${p.done}/${p.total} Abschnitte`;
   }
   const progressPct = (p) => (!p ? 0 : p.done === -1 ? 70 : p.done === -2 ? 85 : Math.round(60 * p.done / Math.max(1, p.total)));
+  // Gleichmäßiger Zeitanteil: bis 80 % linear, danach weich gegen 99 % – bleibt nie lange auf einer Zahl stehen
+  const smoothTime = (x) => (x < 0.8 ? x : 0.8 + 0.19 * (1 - Math.exp(-(x - 0.8) / 0.4)));
+  function procEstimate(p) {
+    if (!p) return { pct: 0, rest: null };
+    const el = (p.elapsed || 0) + (p._at ? (Date.now() - p._at) / 1000 : 0);
+    const work = p.done === -1 ? 0.75 : p.done === -2 ? 0.88 : p.total ? 0.7 * p.done / p.total : 0;
+    const time = p.eta ? smoothTime(el / p.eta) : 0;
+    return { pct: Math.round(100 * Math.min(0.99, Math.max(work, time))), rest: p.eta ? p.eta - el : null };
+  }
+  const restText = (r) => (r == null ? 'Restzeit wird geschätzt …' : r < 8 ? 'gleich fertig …' : `noch ca. ${r < 90 ? Math.max(10, Math.round(r / 5) * 5) + ' Sekunden' : Math.round(r / 60) + ' Minuten'}`);
 
   // ================================================================ Liste (Handy)
   async function renderListe() {
@@ -539,7 +572,7 @@
     view.innerHTML = faq ? `
       <div class="page-head"><h1>Häufige Fragen</h1><p>Kurze Antworten für alle, die den Protokollanten nutzen.</p></div>
       <article class="doc card" id="doc"><p class="muted">Lädt …</p></article>` : `
-      <div class="page-head"><h1>Infos <span class="pill">intern</span></h1>
+      <div class="page-head"><h1>Informationen <span class="pill">intern</span></h1>
         <p>Unterlagen für Betrieb, Datenschutz, IT-Sicherheit und Personalrat. Stand und Inhalte wachsen mit dem Projekt.</p></div>
       <nav class="info-tabs" aria-label="Info-Bereiche">${INFO_TABS.map(([k, l]) => `<a href="#/infos/${k}" class="${k === tab ? 'active' : ''}">${l}</a>`).join('')}</nav>
       <article class="doc card" id="doc"><p class="muted">Lädt …</p></article>`;
@@ -549,10 +582,11 @@
     doc.innerHTML = html;
     // Inhaltsverzeichnis aus den Überschriften (nur bei längeren Seiten)
     const heads = $$('h2', doc);
+    const titles = heads.map((h) => h.textContent.trim());
+    heads.forEach((h, i) => { h.id = h.id || `a${i}`; if (heads.length > 1) h.insertAdjacentHTML('afterbegin', `<span class="h-nr">${i + 1}.</span> `); });
     if (heads.length > 3) {
-      heads.forEach((h, i) => (h.id = h.id || `a${i}`));
       const lead = $('p.lead', doc) || null;
-      (lead ? lead : doc).insertAdjacentHTML(lead ? 'afterend' : 'afterbegin', `<nav class="toc"><strong>Inhalt</strong>${heads.map((h) => `<a href="#" data-goto="${h.id}">${esc(h.textContent)}</a>`).join('')}</nav>`);
+      (lead ? lead : doc).insertAdjacentHTML(lead ? 'afterend' : 'afterbegin', `<nav class="toc"><strong>Inhalt</strong><ol>${heads.map((h, i) => `<li><a href="#" data-goto="${h.id}"><span class="h-nr">${i + 1}.</span>${esc(titles[i])}</a></li>`).join('')}</ol></nav>`);
       doc.addEventListener('click', (e) => { const a = e.target.closest('[data-goto]'); if (a) { e.preventDefault(); document.getElementById(a.dataset.goto).scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
     }
     // Live-Werte des Servers in die Doku einsetzen (data-live="…")
@@ -582,6 +616,7 @@
   };
   async function renderDetail(id) {
     let t = await api(`/api/transcripts/${id}`);
+    if (t.progress) t.progress._at = Date.now();
     let showClean = true, mTab = 'tx', editMd = false, task = null, taskPoll = null, tick = null;
     let curStyle = t.protokoll ? t.protokoll.style : null;
     let q = '', hit = 0, aufgaben = null;
@@ -598,18 +633,38 @@
       const tot = task.total || 0, done = task.done || 0;
       let eta = task.eta || 0;
       if (tot && done) eta = eta ? 0.5 * eta + 0.5 * (el * tot / done) : el * tot / done;
-      const byWork = tot ? done / tot : 0, byTime = eta ? el / eta : 0;
-      const pct = Math.max(byWork, Math.min(0.97, byTime));
+      // Zeitanteil gleichmäßig: bis 80 % linear, danach weich gegen 99 % – bleibt nie lange stehen
+      const byTime = eta ? smoothTime(el / eta) : 0;
+      const byWork = tot ? 0.95 * done / tot : 0;
+      const pct = Math.min(0.99, Math.max(byWork, byTime));
       return { pct: Math.round(pct * 100), rest: eta ? Math.max(0, eta - el) : null };
     }
     function taskBar() {
       if (!busy()) return '';
       const label = task.kind === 'bereinigen' ? 'KI bereinigt den Text' : `KI erstellt ${STYLE_INFO[task.style || 'zusammenfassung'][0]}`;
       const e = taskEstimate();
-      const rest = e.rest == null ? 'startet …' : e.rest < 8 ? 'gleich fertig' : `noch ca. ${e.rest < 90 ? Math.round(e.rest / 5) * 5 + ' s' : Math.round(e.rest / 60) + ' Min.'}`;
+      const rest = e.rest == null ? 'startet …' : e.rest < 8 ? 'gleich fertig …' : `noch ca. ${e.rest < 90 ? Math.round(e.rest / 5) * 5 + ' s' : Math.round(e.rest / 60) + ' Min.'}`;
       return `<div class="progress-banner task"><span class="spin"></span><span class="pb-label">${label}</span><span class="pb-pct">${e.pct} %</span><div class="bar"><i style="width:${Math.max(2, e.pct)}%"></i></div><span class="pb-rest">${rest}</span></div>`;
     }
     function refreshTaskBar() { const bar = $('.progress-banner.task'); if (bar && busy()) bar.outerHTML = taskBar(); }
+
+    function procHtml() {
+      const e = procEstimate(t.progress);
+      const titel = t.status === 'refining' ? 'Aufnahme wird fertig bearbeitet' : 'Datei wird verarbeitet';
+      return `<div class="proc card" id="proc">
+        <div class="ring" id="proc-ring" style="--p:${e.pct}"><span id="proc-pct">${e.pct} %</span></div>
+        <div class="proc-txt"><h2>${titel}</h2>
+          <p id="proc-step">${esc(progressText(t.progress))}</p>
+          <p class="proc-rest" id="proc-rest">${restText(e.rest)}</p>
+          <p class="muted small">Das fertige Transkript erscheint hier automatisch – mit genauer Erkennung und Sprechern. Sie können die Seite solange verlassen.</p></div>
+      </div>`;
+    }
+    function procUpdate() {
+      if (!working() || !$('#proc')) return;
+      const e = procEstimate(t.progress);
+      $('#proc-ring').style.setProperty('--p', e.pct); $('#proc-pct').textContent = e.pct + ' %';
+      $('#proc-step').textContent = progressText(t.progress); $('#proc-rest').textContent = restText(e.rest);
+    }
 
     function draw() {
       const rtf = t.duration && t.processing_seconds ? t.duration / t.processing_seconds : 0;
@@ -623,20 +678,19 @@
         </div>
         <div class="d-meta">
           <span class="chip">${fmtDate(t.created_at)}</span>
-          <span class="chip">${fmt(t.duration)}</span>
+          <span class="chip" title="Länge der Aufnahme">${fmtLen(t.duration)}</span>
           ${speakers.size ? `<span class="chip">${speakers.size} Sprecher</span>` : ''}
           <span class="chip blue" title="Spracherkennung">Modell: ${esc(t.model || '–')}</span>
-          ${rtf ? `<span class="chip ok" title="So lange hat der Server für die Spracherkennung gebraucht">Rechenzeit ${fmtDur(t.processing_seconds)} · ${rtf.toFixed(0)}× schneller als die Aufnahme</span>` : ''}
+          ${rtf && !working() ? `<span class="chip ok" title="So lange hat der Server für die Spracherkennung gebraucht">Rechenzeit ${fmtDur(t.processing_seconds)} · ${rtf.toFixed(0)}× schneller als die Aufnahme</span>` : ''}
           ${hasClean() ? '<span class="chip ai">KI-bereinigt</span>' : ''}
           <button class="chip chip-btn" id="d-meta" title="Teilnehmende, Tagesordnung und Glossar dieser Sitzung">${metaLabel()}</button>
           ${t.status === 'error' ? `<span class="chip danger">${esc(t.error)}</span>` : (t.error ? `<span class="chip warn" title="${esc(t.error)}">Hinweis</span>` : '')}
         </div>
-        ${working() ? `<div class="progress-banner"><span class="spin"></span><span>${t.status === 'refining' ? 'Wird verfeinert – ' : ''}${progressText(t.progress)}</span><div class="bar"><i style="width:${progressPct(t.progress)}%"></i></div></div>` : ''}
-        ${taskBar()}
+        ${working() ? procHtml() : `${taskBar()}
         <div class="ai-bar">
           <button class="btn ai" id="ai-clean" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.spark}${hasClean() ? 'Erneut bereinigen' : 'Text bereinigen'}</button>
           <div class="menu"><button class="btn ai" id="ai-sum" ${busy() || working() || !t.segments.length ? 'disabled' : ''}>${ICON.doc}Protokoll erstellen ▾</button></div>
-          <span class="note">${llm() ? `KI: ${esc(health.llm_model)} · korrigiert nur, erfindet nichts · Ihre eigenen Korrekturen haben Vorrang` : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
+          <span class="note">${llm() ? 'Die KI korrigiert nur und erfindet nichts · Ihre eigenen Korrekturen haben Vorrang' : 'Keine KI angebunden – die Knöpfe führen Schritt für Schritt über NOVA.'}</span>
         </div>
         <div class="d-tabs"><div class="seg-toggle"><button data-mtab="tx" class="${mTab === 'tx' ? 'on' : ''}">Transkript</button><button data-mtab="notes" class="${mTab === 'notes' ? 'on' : ''}">Protokoll</button></div></div>
         <div class="d-grid" data-tab="${mTab}">
@@ -649,7 +703,7 @@
           </section>
           <aside class="notes" id="notes">${drawNotes()}</aside>
         </div>
-        ${t.has_audio ? `<div class="player"><audio id="audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio></div>` : ''}`;
+        ${t.has_audio ? `<div class="player"><audio id="audio" controls preload="metadata" src="/api/transcripts/${t.id}/audio"></audio></div>` : ''}`}`;
       bind();
     }
 
@@ -753,9 +807,12 @@
       const n = pr.zeilen_inhalt || 0, bad = (pr.unbelegt || 0) + (pr.ungueltige_belege || 0) + (pr.schwach_belegt || 0);
       const weg = p.content.verworfen || 0;
       const ok = n - bad;
-      let html = `<span class="q-ico ${bad ? 'warn' : 'ok'}">${bad ? '!' : '✓'}</span><span><strong>${ok} von ${n} Aussagen</strong> stehen so im Transkript.`;
-      if (bad) html += ` ${bad} ${bad === 1 ? 'Stelle ist' : 'Stellen sind'} gelb markiert – bitte prüfen.`;
-      if (weg) html += ` <span class="muted" title="${esc((p.content.verworfen_beispiele || []).join(' · '))}">${weg} KI-${weg === 1 ? 'Aussage wurde' : 'Aussagen wurden'} entfernt, weil sie nicht im Transkript ${weg === 1 ? 'steht' : 'stehen'}.</span>`;
+      let html = `<span class="q-ico ${bad ? 'warn' : 'ok'}">${bad ? '!' : '✓'}</span><span>`;
+      if (!bad) html += n === 1 ? '<strong>Geprüft:</strong> Die Aussage ist im Transkript belegt.' : `<strong>Geprüft:</strong> Alle ${n} Aussagen sind im Transkript belegt.`;
+      else html += `<strong>${ok} von ${n} Aussagen</strong> sind im Transkript belegt. ${bad} ${bad === 1 ? 'Stelle ist' : 'Stellen sind'} gelb markiert – bitte prüfen.`;
+      const bsp = p.content.verworfen_beispiele || [];
+      if (weg) html += `<br><span class="muted">${weg === 1 ? 'Einen weiteren Vorschlag' : weg + ' weitere Vorschläge'} der KI hat der Protokollant weggelassen, weil ${weg === 1 ? 'er' : 'sie'} sich im Transkript nicht belegen ${weg === 1 ? 'ließ' : 'ließen'}.</span>`
+        + (bsp.length ? ` <button class="linkbtn" id="q-weg">Anzeigen</button><ul class="q-weg hidden">${bsp.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : '');
       return `<div class="quality">${html}</span></div>`;
     }
 
@@ -798,7 +855,7 @@
         const p = prot(), pn = p ? STYLE_INFO[p.style][0] : 'Protokoll', st = p ? `&style=${p.style}` : '';
         const dis = (label) => `<span class="disabled" title="Zuerst ein Protokoll erstellen">${label}</span>`;
         openMenu(e.currentTarget, `
-        <div class="menu-label">Word</div>
+        <div class="menu-label">Word · mit Heilbronner Briefkopf</div>
         <a href="${ex('format=docx')}">Transkript (mit Zeit &amp; Sprecher)</a>
         ${p ? `<a href="${ex('format=protokoll' + st)}">${esc(pn)}</a>` : dis('Protokoll')}
         ${p ? `<a href="${ex('format=docx&protokoll=1' + st)}">Transkript und ${esc(pn)}</a>` : dis('Transkript und Protokoll')}
@@ -816,6 +873,7 @@
         if (act === 'delaudio') { if (!confirm('Audio endgültig löschen? Das Transkript bleibt erhalten.')) return; await api(`/api/transcripts/${t.id}/audio`, { method: 'DELETE' }); t.has_audio = false; toast('Audio gelöscht'); draw(); }
         if (act === 'unclean') { await api(`/api/transcripts/${t.id}/bereinigen`, { method: 'DELETE' }); await reload(); toast('Bereinigung verworfen – Original wird angezeigt (Ihre eigenen Korrekturen bleiben)'); }
       }));
+      if (working()) { $('#d-meta').addEventListener('click', editMeta); return; }   // während der Verarbeitung nur Fortschritt
       $$('[data-mtab]').forEach((b) => b.addEventListener('click', () => { mTab = b.dataset.mtab; draw(); }));
       $$('[data-view]').forEach((b) => b.addEventListener('click', () => { showClean = b.dataset.view === 'clean'; draw(); }));
       bindSegs();
@@ -837,6 +895,7 @@
       $$('[data-style]').forEach((b) => b.addEventListener('click', () => aiSum(b.dataset.style)));
       $('#p-pick')?.addEventListener('click', (e) => openMenu(e.currentTarget, styleMenuHtml(), (st) => { curStyle = st; editMd = false; draw(); }));
       if (!editMd) $$('#prot .pl[data-refs]').forEach((el) => { const r = (el.dataset.refs || '').split(',').filter(Boolean); if (r.length) el.addEventListener('click', () => jump(+r[0])); });
+      $('#q-weg')?.addEventListener('click', (e) => { const l = $('.q-weg'); l.classList.toggle('hidden'); e.target.textContent = l.classList.contains('hidden') ? 'Anzeigen' : 'Ausblenden'; });
       $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); const pr = $('#prot'); if (pr) { pr.focus(); } });
       $('#p-cancel')?.addEventListener('click', () => { editMd = false; draw(); });
       $('#p-save')?.addEventListener('click', async () => {
@@ -1033,16 +1092,18 @@
       if (document.activeElement && (document.activeElement.isContentEditable || document.activeElement.tagName === 'TEXTAREA')) return;
       try {
         const n = await api(`/api/transcripts/${id}`);
-        const changed = n.status !== t.status || JSON.stringify(n.progress) !== JSON.stringify(t.progress) || n.segments.length !== t.segments.length;
+        if (n.progress) n.progress._at = Date.now();
+        const changed = n.status !== t.status;
         const a = audio(), pos = a ? a.currentTime : 0, playing = a && !a.paused;
         t = n;
         if (changed) {
           draw(); const b = audio(); if (b && pos) { b.currentTime = pos; if (playing) b.play().catch(() => { }); }
-          if (n.status === 'done') { toast(hasClean() ? 'Fertig: genaue Erkennung, Sprecher und KI-Bereinigung abgeschlossen' : 'Fertig: genaue Erkennung und Sprecher. Jetzt können Sie bereinigen oder ein Protokoll erstellen.'); loadSide(); }
-        }
+          if (n.status === 'done') { if (!working()) loadAufgaben(); toast(hasClean() ? 'Fertig: genaue Erkennung, Sprecher und KI-Bereinigung abgeschlossen' : 'Fertig: genaue Erkennung und Sprecher. Jetzt können Sie bereinigen oder ein Protokoll erstellen.'); loadSide(); }
+        } else procUpdate();
       } catch { }
     }, 2000);
-    return () => { clearInterval(poll); clearInterval(taskPoll); clearInterval(tick); window.removeEventListener('resize', onResize); };
+    const procTick = setInterval(procUpdate, 500);
+    return () => { clearInterval(poll); clearInterval(procTick); clearInterval(taskPoll); clearInterval(tick); window.removeEventListener('resize', onResize); };
   }
 
   // ================================================================ Start

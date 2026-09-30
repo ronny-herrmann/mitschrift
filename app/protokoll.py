@@ -320,7 +320,7 @@ def _block_text(block) -> str:
 
 
 def check_items(items: list[dict], block, min_support: float = 0.5) -> tuple[list[dict], list[dict]]:
-    """Jede Zeile gegen ihre Belegstelle (± ein Nachbarsegment) prüfen. → (gültig, verworfen)"""
+    """Jede Zeile gegen ihre Belegstelle (± zwei Nachbarsegmente) prüfen. → (gültig, verworfen)"""
     by_idx = {s.idx: s for s in block}
     order = [s.idx for s in block]
     ok, bad = [], []
@@ -343,10 +343,23 @@ def check_items(items: list[dict], block, min_support: float = 0.5) -> tuple[lis
             best_sc = support(it["text"], " ".join((by_idx[order[p]].clean or by_idx[order[p]].text) for p in pos))
         if best_sc < min_support:
             # Falsche oder fehlende Nummer: passendstes Segment im Abschnitt suchen
+            # (auch zwei aufeinanderfolgende Segmente – Aussagen verteilen sich oft auf zwei Sätze)
+            single = {}
             for s in block:
-                sc = support(it["text"], s.clean or s.text)
+                single[s.idx] = sc = support(it["text"], s.clean or s.text)
                 if sc > best_sc:
                     best_sc, best_refs = sc, [s.idx]
+            if best_sc < min_support:
+                for a, b in zip(block, block[1:]):
+                    sc2 = support(it["text"], f"{a.clean or a.text} {b.clean or b.text}")
+                    if sc2 > best_sc:
+                        best_sc, best_refs = sc2, [a.idx if single[a.idx] >= single[b.idx] else b.idx]
+        if best_sc < min_support and refs:
+            # letzte Chance: etwas weiteres Umfeld (± zwei Sätze) um die angegebene Stelle
+            pos = sorted({order.index(r) + d for r in refs for d in (-2, -1, 0, 1, 2) if 0 <= order.index(r) + d < len(order)})
+            sc = support(it["text"], " ".join((by_idx[order[p]].clean or by_idx[order[p]].text) for p in pos))
+            if sc > best_sc:
+                best_sc, best_refs = sc, refs
         it["support"] = round(best_sc, 2)
         if best_sc >= min_support and best_refs:
             it["refs"] = best_refs
@@ -488,7 +501,7 @@ def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars
         "protokoll_md": md,
         "pruefung": verify(t, md),
         "verworfen": len(ex["verworfen"]),
-        "verworfen_beispiele": [v["text"] for v in ex["verworfen"][:5]],
+        "verworfen_beispiele": [v["text"] for v in ex["verworfen"][:20]],
         "extrakt": ex,
         "llm": {"model": getattr(llm, "model", "") if llm else "Zwischenspeicher"},
     }
