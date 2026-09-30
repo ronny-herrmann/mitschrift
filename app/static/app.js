@@ -511,7 +511,7 @@
   // ================================================================ Glossar
   async function renderGlossar() {
     view.innerHTML = `
-      <div class="page-head"><h1>Glossar</h1><p>Begriffe, Namen und Abkürzungen der Verwaltung. Sie werden nach der Erkennung automatisch korrigiert und der KI als Pflicht-Schreibweise mitgegeben – z. B. „CHS“ → „Excel“. Einträge ohne Amt gelten für alle.</p></div>
+      <div class="page-head"><h1>Glossar</h1><p>Begriffe, Namen und Abkürzungen der Verwaltung. Sie werden nach der Erkennung automatisch korrigiert und der KI als Pflicht-Schreibweise mitgegeben – z. B. „Echsel“ → „Excel“. Einträge ohne Amt gelten für alle.</p></div>
       <div class="card">
         <div class="gl-tools">
           <label class="field-label inline">Anzeigen<select id="gl-filter"><option value="">Alle Einträge</option></select></label>
@@ -524,7 +524,7 @@
       </div>`;
     const body = $('#gl'), filter = $('#gl-filter');
     let all = await api('/api/glossar');
-    const row = (e = {}) => `<tr data-amt="${esc(e.amt || '')}"><td><input type="text" value="${esc(e.von)}" placeholder="z. B. CHS"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><input type="text" class="amt" value="${esc(e.amt || '')}" placeholder="alle"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
+    const row = (e = {}) => `<tr data-amt="${esc(e.amt || '')}"><td><input type="text" value="${esc(e.von)}" placeholder="z. B. Echsel"></td><td><input type="text" value="${esc(e.zu)}" placeholder="z. B. Excel"></td><td><input type="text" class="amt" value="${esc(e.amt || '')}" placeholder="alle"></td><td><button class="btn ghost sm" data-del>✕</button></td></tr>`;
     const collect = () => $$('tr', body).map((tr) => { const [a, b, c] = $$('input', tr); return { von: a.value, zu: b.value, amt: c.value }; });
     const fillFilter = () => {
       const aemter = [...new Set(all.map((e) => e.amt).filter(Boolean))].sort();
