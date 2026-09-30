@@ -83,7 +83,7 @@
         banner.classList.remove('hidden');
       }
 
-      const ms = $('#m-sys'); if (ms) { ms.className = 'm-sys ' + $('#sys').className.replace('sys', '').trim(); ms.title = $('#sys-txt').textContent; }
+      const mu = $('#m-user'); if (mu) { const st = ($('#sys').className.match(/\b(ok|loading|err)\b/) || ['ok'])[0]; mu.dataset.status = st; mu.title = $('#sys-txt').textContent; }
       document.dispatchEvent(new CustomEvent('health'));
     } catch {
       $('#sys').className = 'sys err'; $('#sys-txt').textContent = 'Server nicht erreichbar';
@@ -103,7 +103,7 @@
     e.stopPropagation();
     $$('.menu-list').forEach((m) => m.remove());
     const m = document.createElement('div'); m.className = 'menu-list ' + (mobile ? 'down' : 'up');
-    m.innerHTML = `${mobile ? `<div class="menu-status">${esc($('#sys-txt').textContent)}</div>` : ''}<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
+    m.innerHTML = `${mobile ? `<div class="menu-status"><span class="m-dot ${($('#sys').className.match(/\b(ok|loading|err)\b/) || [''])[0]}"></span>${esc($('#sys-txt').textContent)}</div>` : ''}<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
       <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="pw">Zugangspasswort ändern</button><button data-act="logout">Abmelden</button>' : ''}`;
     (mobile ? document.body : e.currentTarget.parentElement).appendChild(m);
     setTimeout(() => document.addEventListener('click', function close(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
@@ -232,9 +232,12 @@
       return;
     }
     try {
-      (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput').forEach((d, i) => {
-        const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || `Mikrofon ${i + 1}`; micSel.appendChild(o);
-      });
+      // Mikrofone mit verständlichem Namen; „Standard“/„Kommunikation“-Doppel und leere Namen (vor der Freigabe) zusammenfassen
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+      const named = devs.filter((d) => d.label && !['default', 'communications'].includes(d.deviceId));
+      const std = devs.find((d) => d.deviceId === 'default' && d.label);
+      micSel.options[0].textContent = std ? std.label.replace(/^(Standard|Default)\s*[-–]\s*/i, '') : (named.length === 1 ? named[0].label : 'Mikrofon dieses Geräts');
+      if (named.length > 1) named.forEach((d) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label; micSel.appendChild(o); });
     } catch { }
     const updateStart = () => {
       startBtn.disabled = !consent.checked || !health.ready;
@@ -413,7 +416,7 @@
   // ================================================================ Sitzungsdaten (Teilnehmende, Tagesordnung)
   function sitzungsFelder(p, m = {}) {
     const open = (m.teilnehmende && m.teilnehmende.length) || (m.tagesordnung && m.tagesordnung.length);
-    return `<details class="sitzung" ${open ? 'open' : ''}><summary>Teilnehmende und Tagesordnung <span class="muted">(optional – verbessert Sprechernamen und Protokoll)</span></summary>
+    return `<details class="sitzung" ${open ? 'open' : ''}><summary><span class="s-title">Teilnehmende und Tagesordnung</span><span class="s-hint">optional – verbessert Sprechernamen und Protokoll</span></summary>
       <div class="sitzung-grid">
         <label>Teilnehmende<textarea id="${p}-tn" rows="4" placeholder="Frau Müller&#10;Herr Maier">${esc((m.teilnehmende || []).join('\n'))}</textarea><span class="hint">Anrede und Nachname, eine Person je Zeile. Keine Vornamen nötig.</span></label>
         <label>Tagesordnung<textarea id="${p}-to" rows="4" placeholder="Begrüßung&#10;Haushalt 2027&#10;Verschiedenes">${esc((m.tagesordnung || []).join('\n'))}</textarea>
@@ -688,14 +691,25 @@
       $('#proc-step').textContent = progressText(t.progress); $('#proc-rest').textContent = restText(e.rest);
     }
 
+    let lastStyle = null, drawn = false;
     function draw() {
+      // Scrollpositionen behalten (sonst springt z. B. „Als geprüft markieren“ scheinbar ins Leere)
+      const keep = { win: window.scrollY, tx: $('#tx')?.scrollTop || 0, notes: $('.notes-card')?.scrollTop || 0, same: lastStyle === curStyle };
+      lastStyle = curStyle;
+      drawInner();
+      if (!drawn) { drawn = true; return; }
+      const txe = $('#tx'); if (txe) txe.scrollTop = keep.tx;
+      const nc = $('.notes-card'); if (nc && keep.same) nc.scrollTop = keep.notes;
+      window.scrollTo(0, keep.win);
+    }
+    function drawInner() {
       const rtf = t.duration && t.processing_seconds ? t.duration / t.processing_seconds : 0;
       const speakers = new Set(t.segments.map((s) => s.speaker).filter(Boolean));
 
       view.innerHTML = `
         <div class="d-head">
           <textarea class="d-title" id="d-title" rows="1" aria-label="Titel bearbeiten">${esc(t.title)}</textarea>
-          <div class="menu"><button class="btn" id="d-export">${ICON.down}Export</button></div>
+          <div class="menu"><button class="btn" id="d-export" aria-label="Export">${ICON.down}Export</button></div>
           <div class="menu"><button class="btn ghost" id="d-more" aria-label="Weitere Aktionen">${ICON.more}</button></div>
         </div>
         <div class="d-meta">
@@ -751,7 +765,7 @@
       return blocks.map((b) => {
         const col = colors.get(b.speaker);
         return `<div class="block">
-          <div class="avatar ${col ? '' : 'none'}" style="${col ? 'background:' + col : ''}">${b.speaker ? esc(initials(b.speaker)) : '?'}</div>
+          <button type="button" class="avatar ${col ? '' : 'none'}" style="${col ? 'background:' + col : ''}" title="Namen ändern" aria-label="Sprecher ${esc(b.speaker || '')} umbenennen">${b.speaker ? esc(initials(b.speaker)) : '?'}</button>
           <div class="bhead"><span class="bname" data-spk="${esc(b.speaker)}" title="Namen ändern">${esc(b.speaker || 'Sprecher zuordnen')}</span><span class="btime" data-seek="${b.segs[0].start}">${fmt(b.segs[0].start)}</span></div>
           <div class="bbody">${b.segs.map((s) => {
             const useClean = showClean && s.clean;
@@ -824,6 +838,12 @@
       $$('.tasks tr[data-jump]').forEach((tr) => { if (tr.dataset.jump !== '') tr.addEventListener('click', () => jump(+tr.dataset.jump)); });
     }
 
+    const LAENGE = [['kompakt', 'Kompakt'], ['standard', 'Standard'], ['ausfuehrlich', 'Ausführlich']];
+    function laengeSwitch(p) {
+      if (!llm()) return '';
+      const cur = p.content.laenge || 'ausfuehrlich';
+      return `<span class="sp"></span><div class="seg-toggle laenge" title="Länge des Protokolls – wird ohne neue KI-Auswertung sofort umgestellt">${LAENGE.map(([k, l]) => `<button data-laenge="${k}" class="${k === cur ? 'on' : ''}" ${busy() ? 'disabled' : ''}>${l}</button>`).join('')}</div>`;
+    }
     function qualityLine(p) {
       const pr = p.content.pruefung || { zeilen_inhalt: 0, unbelegt: 0, ungueltige_belege: 0, schwach_belegt: 0 };
       const n = pr.zeilen_inhalt || 0, bad = (pr.unbelegt || 0) + (pr.ungueltige_belege || 0) + (pr.schwach_belegt || 0);
@@ -848,14 +868,14 @@
       const am = p.content.geprueft_am ? fmtDate(p.content.geprueft_am, { dateStyle: 'medium' }) : '';
       return `${head}
         <div class="card notes-card">
-          ${qualityLine(p)}
-          <div class="prot ${editMd ? 'editing' : ''}" id="prot" ${editMd ? 'contenteditable="true" spellcheck="true"' : ''}>${renderMd((p.content.pruefung || {}).zeilen || [])}</div>
           <div class="p-actions">
             ${editMd ? '<button class="btn primary sm" id="p-save">Speichern</button><button class="btn ghost sm" id="p-cancel">Abbrechen</button><span class="muted small">Direkt im Text ändern – wie in Word.</span>'
               : `<button class="btn sm" id="p-edit">Bearbeiten</button>
                  <button class="btn sm ${geprueft ? 'done' : ''}" id="p-confirm" title="${geprueft ? 'Markierung aufheben' : 'Bestätigen, dass eine Person das Protokoll inhaltlich geprüft hat. Steht dann auch im Word-Export.'}">${geprueft ? ICON.check + 'Geprüft' + (am ? ' am ' + am : '') : 'Als geprüft markieren'}</button>
-                 <button class="btn ghost sm" id="p-copy">Kopieren</button>`}
+                 <button class="btn ghost sm" id="p-copy">Kopieren</button>${laengeSwitch(p)}`}
           </div>
+          ${qualityLine(p)}
+          <div class="prot ${editMd ? 'editing' : ''}" id="prot" ${editMd ? 'contenteditable="true" spellcheck="true"' : ''}>${renderMd((p.content.pruefung || {}).zeilen || [])}</div>
           <div id="aufgaben">${drawAufgaben()}</div>
         </div>`;
     }
@@ -873,9 +893,16 @@
     function bind() {
       const ti = $('#d-title'); const fit = () => { ti.style.height = 'auto'; ti.style.height = ti.scrollHeight + 'px'; };
       fit(); requestAnimationFrame(fit);
-      ti.addEventListener('input', () => { ti.value = ti.value.replace(/\n/g, ' '); fit(); });
-      ti.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ti.blur(); } });
-      $('#d-title').addEventListener('change', async (e) => { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: e.target.value }) }); t.title = e.target.value; toast('Titel gespeichert'); loadSide(); });
+      // Titel: speichern beim Verlassen des Feldes oder mit Enter (nicht über „change“ – das feuert bei Textfeldern
+      // nicht zuverlässig, sobald der Wert per Skript angepasst wurde)
+      ti.addEventListener('input', () => { if (ti.value.includes('\n')) ti.value = ti.value.replace(/\n+/g, ' '); fit(); });
+      ti.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ti.blur(); } if (e.key === 'Escape') { ti.value = t.title; ti.blur(); } });
+      ti.addEventListener('blur', async () => {
+        const v = ti.value.replace(/\s+/g, ' ').trim();
+        if (!v || v === t.title) { ti.value = t.title; fit(); return; }
+        try { await api(`/api/transcripts/${t.id}`, { method: 'PATCH', body: JSON.stringify({ title: v }) }); t.title = v; ti.value = v; toast('Titel gespeichert'); loadSide(); }
+        catch (e) { toast('Titel konnte nicht gespeichert werden: ' + e.message, true); }
+      });
       const ex = (q) => `/api/transcripts/${t.id}/export?${q}`;
       $('#d-export').addEventListener('click', (e) => {
         const p = prot(), pn = p ? STYLE_INFO[p.style][0] : 'Protokoll', st = p ? `&style=${p.style}` : '';
@@ -932,23 +959,37 @@
         $$('.seg').forEach((el) => el.classList.toggle('playing', cur >= +el.dataset.start && cur < +el.dataset.end));
       };
       $('#ai-clean').addEventListener('click', aiClean);
-      $('#ai-sum').addEventListener('click', (e) => openMenu(e.currentTarget, Object.entries(STYLE_INFO).map(([k, [n, d]]) => `<button data-act="${k}"><strong>${n}</strong><small>${d}</small></button>`).join(''), (st) => aiSum(st)));
+      $('#ai-sum').addEventListener('click', (e) => openMenu(e.currentTarget, Object.entries(STYLE_INFO).map(([k, [n, d]]) =>
+        `<div class="style-row"><button data-act="${k}:standard" class="style-main"><strong>${n}</strong><small>${d}</small></button>`
+        + (llm() ? `<div class="len-pick" aria-label="Länge">${LAENGE.map(([lk, ll]) => `<button data-act="${k}:${lk}" class="${lk === 'standard' ? 'on' : ''}">${ll}</button>`).join('')}</div>` : '') + '</div>').join('')
+        + (llm() ? '<div class="menu-note">Länge lässt sich danach jederzeit ohne Wartezeit umstellen.</div>' : ''),
+        (act) => { const [st, la] = act.split(':'); aiSum(st, la || 'standard'); }));
       $$('[data-style]').forEach((b) => b.addEventListener('click', () => aiSum(b.dataset.style)));
       $('#p-pick')?.addEventListener('click', (e) => openMenu(e.currentTarget, styleMenuHtml(), (st) => { curStyle = st; editMd = false; draw(); }));
       if (!editMd) $$('#prot .pl[data-refs]').forEach((el) => { const r = (el.dataset.refs || '').split(',').filter(Boolean); if (r.length) el.addEventListener('click', () => jump(+r[0])); });
       $('#q-weg')?.addEventListener('click', (e) => { const l = $('.q-weg'); l.classList.toggle('hidden'); e.target.textContent = l.classList.contains('hidden') ? 'Anzeigen' : 'Ausblenden'; });
       $('#p-edit')?.addEventListener('click', () => { editMd = true; draw(); const pr = $('#prot'); if (pr) { pr.focus(); } });
       $('#p-cancel')?.addEventListener('click', () => { editMd = false; draw(); });
-      $('#p-save')?.addEventListener('click', async () => {
-        const md = toMarkdown($('#prot'));
-        const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: md, style: curStyle }) });
-        t.protokolle[curStyle] = np; editMd = false; draw(); toast('Gespeichert');
+      $('#p-save')?.addEventListener('click', async (e) => {
+        const b = e.currentTarget; b.disabled = true; b.textContent = 'Speichert …';
+        try {
+          const md = toMarkdown($('#prot'));
+          const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ protokoll_md: md, style: curStyle }) });
+          t.protokolle[curStyle] = np; editMd = false; draw(); toast('Protokoll gespeichert');
+        } catch (err) { b.disabled = false; b.textContent = 'Speichern'; toast('Speichern fehlgeschlagen: ' + err.message, true); }
       });
-      $('#p-confirm')?.addEventListener('click', async () => {
-        const p = prot();
-        const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: p.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt', style: curStyle }) });
-        t.protokolle[curStyle] = np; draw(); toast(np.status === 'bestaetigt' ? 'Als geprüft markiert – steht so auch im Word-Export' : 'Markierung aufgehoben');
+      $('#p-confirm')?.addEventListener('click', async (e) => {
+        const p = prot(); e.currentTarget.disabled = true;
+        try {
+          const np = await api(`/api/transcripts/${t.id}/protokoll`, { method: 'PATCH', body: JSON.stringify({ status: p.status === 'bestaetigt' ? 'entwurf' : 'bestaetigt', style: curStyle }) });
+          t.protokolle[curStyle] = np; draw(); toast(np.status === 'bestaetigt' ? 'Als geprüft markiert – steht so auch im Word-Export' : 'Markierung „geprüft“ aufgehoben');
+        } catch (err) { e.currentTarget.disabled = false; toast('Das hat nicht geklappt: ' + err.message, true); }
       });
+      $$('[data-laenge]').forEach((b) => b.addEventListener('click', async () => {
+        const p = prot(); if (!p || b.classList.contains('on')) return;
+        if (p.content.bearbeitet && !await confirmDialog({ title: 'Länge ändern?', text: 'Das Protokoll wird neu zusammengestellt. Ihre Änderungen von Hand gehen dabei verloren.', ok: 'Neu zusammenstellen', danger: false })) return;
+        aiSum(curStyle, b.dataset.laenge);
+      }));
       $('#p-copy')?.addEventListener('click', async () => { const md = prot().content.protokoll_md.replace(/\s*\[\s*S\s*\d+(?:\s*[,;–-]\s*S?\s*\d+)*\s*\]/g, ''); if (await copy(md)) toast('Protokoll kopiert'); });
       sizePanes();
     }
@@ -978,6 +1019,8 @@
       });
       $$('[data-seek]').forEach((el) => el.addEventListener('click', () => seek(+el.dataset.seek)));
       $$('.bname').forEach((el) => el.addEventListener('click', (e) => pickSpeaker(el, e)));
+      // auch das Kürzel links (S1, S2 …) öffnet die Namensauswahl
+      $$('.block > .avatar').forEach((av) => av.addEventListener('click', (e) => { const n = av.parentElement.querySelector('.bname'); if (n) { e.stopPropagation(); pickSpeaker(n, e); } }));
     }
 
     function showHit(scroll = true) {
@@ -1104,9 +1147,9 @@
       };
     }
 
-    async function aiSum(style = 'zusammenfassung') {
+    async function aiSum(style = 'zusammenfassung', laenge = 'standard') {
       if (llm()) {
-        try { await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style }) }); } catch (e) { toast(e.message, true); return; }
+        try { await api(`/api/transcripts/${t.id}/protokoll`, { method: 'POST', body: JSON.stringify({ style, laenge }) }); } catch (e) { toast(e.message, true); return; }
         task = { kind: 'protokoll', style, status: 'running', done: 0, total: 0, elapsed: 0 }; mTab = 'notes'; draw();
         watchTask(async () => { t = await api(`/api/transcripts/${id}`); curStyle = style; mTab = 'notes'; editMd = false; aufgaben = null; draw(); loadAufgaben(); toast(`${STYLE_INFO[style][0]} erstellt`); });
         return;

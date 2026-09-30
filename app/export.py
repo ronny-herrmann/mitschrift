@@ -164,6 +164,33 @@ def _base_document(t: Transcript, titel: str, vorlage: str | None):
     return doc, False
 
 
+def _aufgaben_tabelle(doc, rows: list[list[str]]) -> None:
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    tbl = doc.add_table(rows=1, cols=3)
+    try:
+        tbl.style = doc.styles["Table Grid"]
+    except KeyError:
+        pass
+    for cell, txt in zip(tbl.rows[0].cells, ("Wer", "Was", "Bis wann")):
+        cell.text = ""
+        r = cell.paragraphs[0].add_run(txt)
+        r.bold = True
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear"); shd.set(qn("w:color"), "auto"); shd.set(qn("w:fill"), "F2F2F2")
+        cell._tc.get_or_add_tcPr().append(shd)
+    for row in rows:
+        row = (row + ["", "", ""])[:3]
+        cells = tbl.add_row().cells
+        for cell, txt in zip(cells, row):
+            cell.text = txt if txt and txt not in ("-", "–") else "–"
+    from docx.shared import Cm
+    for row in tbl.rows:
+        for cell, w in zip(row.cells, (Cm(3.5), Cm(9.5), Cm(3))):
+            cell.width = w
+    doc.add_paragraph()
+
+
 def _bullet(doc, text: str, briefkopf: bool):
     from docx.shared import Cm
     if briefkopf:
@@ -224,10 +251,23 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                                      + "Jede Aussage wurde automatisch gegen das Transkript geprüft.")
             note.runs[0].font.size = Pt(9)
             note.runs[0].italic = True
-            for line in strip_refs(protokoll_md).splitlines():
-                line = line.rstrip()
+            lines = [ln.rstrip() for ln in strip_refs(protokoll_md).splitlines()]
+            section, i = "", 0
+            while i < len(lines):
+                line = lines[i]
+                i += 1
                 if not line:
                     continue
+                # Aufgaben „Wer | Was | Bis wann“ als Tabelle
+                if section.lower().startswith("aufgaben") and line.startswith(("- ", "* ")) and line.count("|") >= 2:
+                    rows = [line]
+                    while i < len(lines) and lines[i].startswith(("- ", "* ")) and lines[i].count("|") >= 2:
+                        rows.append(lines[i])
+                        i += 1
+                    _aufgaben_tabelle(doc, [[c.strip() for c in r[2:].split("|")][:3] for r in rows])
+                    continue
+                if line.startswith("## "):
+                    section = line[3:].strip()
                 if line.startswith("### "):
                     doc.add_heading(line[4:], level=4)
                 elif line.startswith("## "):

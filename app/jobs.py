@@ -35,17 +35,20 @@ def _diar_init(models_dir: str, threshold: float, speakers: int, threads: int) -
     _DIAR = Diarizer(models_dir, threshold, speakers, threads)
 
 
-def _diar_turns(audio):
-    return _DIAR.turns(audio)
+def _diar_turns(audio, num_speakers: int = 0):
+    # num_speakers: sonst automatisch; überschreibt die Grundeinstellung nur für diesen Lauf
+    return _DIAR.turns(audio, num_speakers)
 
 
 class JobQueue:
-    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, llm_factory=None, glossar_for=None):
+    def __init__(self, transcriber: Transcriber, store: Store, settings: Settings, llm_factory=None, glossar_for=None,
+                 speakers_for=None):
         self.transcriber = transcriber
         self.store = store
         self.settings = settings
         self.llm_factory = llm_factory
         self.glossar_for = glossar_for or (lambda tid: transcriber.glossar_entries())
+        self.speakers_for = speakers_for
         self._diarizer = None
         self._diarizer_failed = False
         self._q: queue.Queue[str] = queue.Queue()
@@ -125,7 +128,10 @@ class JobQueue:
 
         entries = self.glossar_for(tid)
         # Sprechererkennung startet sofort im Hilfsprozess und läuft parallel zur Spracherkennung
-        fut = self._start_diarization(audio) if self.settings.diarization else None
+        # Sind Teilnehmende eingetragen, ist die Sprecherzahl bekannt → deutlich weniger Fehlaufteilungen
+        n_sp = self.speakers_for(tid) if self.speakers_for else 0
+        n_sp = n_sp if n_sp >= 2 else (self.settings.diarization_speakers or -1)
+        fut = self._start_diarization(audio, n_sp) if self.settings.diarization else None
         segments, secs = self.transcriber.transcribe_audio(audio, prog, entries=entries)
 
         if fut is not None:
@@ -191,10 +197,10 @@ class JobQueue:
                 initargs=(str(s.models_dir), s.diarization_threshold, s.diarization_speakers, s.diarization_threads))
         return self._diarizer
 
-    def _start_diarization(self, audio):
+    def _start_diarization(self, audio, num_speakers: int = 0):
         try:
             pool = self._diar_pool()
-            return pool.submit(_diar_turns, audio) if pool else None
+            return pool.submit(_diar_turns, audio, num_speakers) if pool else None
         except Exception:
             log.exception("Sprechererkennung konnte nicht gestartet werden")
             return None

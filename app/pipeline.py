@@ -36,6 +36,27 @@ def asr_executor(workers: int = 1) -> ThreadPoolExecutor:
     return _executor
 
 
+def merge_short(speech: list, audio: np.ndarray, short_s: float = 2.5, max_gap_s: float = 3.0,
+                max_len_s: float = 28.0) -> list:
+    """Sehr kurze Sprachstücke mit dem Nachbarn zusammenlegen, wenn die Pause kurz ist.
+
+    Einzelne Wörter ohne Zusammenhang erkennt das Modell schlecht („Am Donnerstag, den 24.“ wurde als
+    „Um“ / „Tonastaakin.“ / „Vierundzwierten“ erkannt). Mit dem folgenden Satz zusammen klappt es meist."""
+    from .vad import SpeechSegment
+    sr = SAMPLE_RATE
+    out: list = []
+    for sp in speech:
+        if out:
+            prev = out[-1]
+            gap = (sp.start - prev.end) / sr
+            prev_len, cur_len = (prev.end - prev.start) / sr, (sp.end - sp.start) / sr
+            if gap <= max_gap_s and (prev_len < short_s or cur_len < short_s) and (sp.end - prev.start) / sr <= max_len_s:
+                out[-1] = SpeechSegment(prev.start, sp.end, audio[prev.start:sp.end])
+                continue
+        out.append(sp)
+    return out
+
+
 class Transcriber:
     def __init__(
         self,
@@ -112,6 +133,9 @@ class Transcriber:
         t0 = time.perf_counter()
         with self._vad_lock:
             speech = segment_audio(audio, self.vad, **self.vad_kwargs(offline=True))
+        if self.settings.offline_merge_short_s > 0:
+            speech = merge_short(speech, audio, short_s=self.settings.offline_merge_short_s,
+                                 max_len_s=self.settings.offline_max_segment_s)
         entries = entries if entries is not None else self._glossar()
         rules = compile_glossar(entries)
         if hasattr(backend, "set_hotwords"):

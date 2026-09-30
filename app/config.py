@@ -96,13 +96,15 @@ class Settings:
     # Offline (Upload/Verfeinerung): längere Segmente = mehr Kontext = bessere Erkennung
     offline_max_segment_s: float = field(default_factory=lambda: _env_float("OFFLINE_MAX_SEGMENT_S", 28.0))
     offline_min_silence_ms: int = field(default_factory=lambda: _env_int("OFFLINE_MIN_SILENCE_MS", 1200))
+    # Sehr kurze Sprachstücke (Sekunden) mit dem Nachbarn zusammenlegen – mehr Zusammenhang für die Erkennung (0 = aus)
+    offline_merge_short_s: float = field(default_factory=lambda: _env_float("OFFLINE_MERGE_SHORT_S", 2.5))
 
     # Nach Ende einer Live-Aufnahme: Verfeinerung über die ganze Datei (läuft im Hintergrund)
     live_final_pass: bool = field(default_factory=lambda: _env_bool("LIVE_FINAL_PASS", True))
 
     # Sprechererkennung im genauen Durchlauf (pyannote-Segmentierung + 3D-Speaker, sherpa-onnx)
     diarization: bool = field(default_factory=lambda: _env_bool("DIARIZATION", True))
-    diarization_threshold: float = field(default_factory=lambda: _env_float("DIARIZATION_THRESHOLD", 0.7))
+    diarization_threshold: float = field(default_factory=lambda: _env_float("DIARIZATION_THRESHOLD", 0.85))
     # Feste Sprecherzahl, falls bekannt (0 = automatisch)
     diarization_speakers: int = field(default_factory=lambda: _env_int("DIARIZATION_SPEAKERS", 0))
     # Rechenkerne für die Sprechererkennung (läuft in eigenem Prozess parallel zur Spracherkennung)

@@ -202,3 +202,52 @@ def test_agenda_structures_result_protocol_and_tasks():
     auf = [it for a in c["extrakt"]["abschnitte"] for it in a["items"] if it["typ"] == "AUFGABE"]
     assert auf[0]["wer"] == "Frau Müller" and auf[0]["bis"] == "Freitag"
     assert c["pruefung"]["unbelegt"] == 0
+
+
+def test_agenda_from_word_table_with_letterhead():
+    """Typische Besprechungsvorlage: Briefkopf-Tabelle + Tabelle mit Spalten Nr/Gemeldet von/Thema/Sachverhalt."""
+    import io
+    from docx import Document
+    from app.glossar import read_agenda
+    doc = Document()
+    kopf = doc.add_table(rows=3, cols=4)
+    for r, (a, b, c) in enumerate([("Stadt Musterstadt", "Datum", "01.01.2030"), ("Musteramt", "Gz.", "000"), ("", "Telefon", "123")]):
+        kopf.cell(r, 0).text, kopf.cell(r, 1).text, kopf.cell(r, 3).text = a, b, c
+    t = doc.add_table(rows=5, cols=6)
+    for i, h in enumerate(["Lfd. Nr.", "Gemeldet von", "Thema", "Sachverhalt/Lösungsvorschlag", "Endergebnis", "Wer"]):
+        t.cell(0, i).text = h
+    t.cell(1, 1).text, t.cell(1, 2).text, t.cell(1, 3).text = "Ab", "Virtuelles Rathaus", "Ausweitung?\nÜbersetzung?"
+    t.cell(2, 2).text = "Grippeimpfung"
+    buf = io.BytesIO(); doc.save(buf)
+    assert read_agenda("to.docx", buf.getvalue()) == ["Virtuelles Rathaus – Ausweitung? Übersetzung?", "Grippeimpfung"]
+
+
+def test_agenda_from_text_prefers_numbered_lines():
+    from app.glossar import read_agenda
+    txt = "Stadt Musterstadt\nDatum 01.01.2030\nTagesordnung\nTOP 1: Begrüßung\nTOP 2: Haushalt\n3. Verschiedenes\n"
+    assert read_agenda("to.txt", txt.encode()) == ["Begrüßung", "Haushalt", "Verschiedenes"]
+
+
+def test_protokoll_laenge_waehlt_aus():
+    from app.protokoll import _auswahl, assemble
+    assert _auswahl(list(range(10)), 3) == [0, 4, 9] or len(_auswahl(list(range(10)), 3)) == 3
+    woerter = ["Haushalt", "Personal", "Schulen", "Brücken", "Radwege", "Kitas", "Friedhof", "Bäder", "Parks"]
+    items = [{"typ": "AUSSAGE", "text": f"Aussage über {w} im Detail", "refs": [0], "top": 1} for w in woerter]
+    items.append({"typ": "BESCHLUSS", "text": "Beschluss A", "refs": [0], "top": 1})
+    t = make_transcript()
+    kurz = assemble(t, "ergebnis", [{"start": 0, "end": 1, "items": items}], ["Haushalt"], "kompakt")
+    lang = assemble(t, "ergebnis", [{"start": 0, "end": 1, "items": items}], ["Haushalt"], "ausfuehrlich")
+    assert kurz.count("Aussage ") == 2 and lang.count("Aussage ") == 9
+    assert "Beschluss A" in kurz
+
+
+def test_merge_short_speech_pieces(app_env):
+    import numpy as np
+    from app.pipeline import merge_short
+    from app.vad import SpeechSegment
+    sr = 16000
+    audio = np.zeros(sr * 40, dtype=np.float32)
+    seg = lambda a, b: SpeechSegment(int(a * sr), int(b * sr), audio[int(a * sr):int(b * sr)])  # noqa: E731
+    # „Um“ / „Tonastaakin.“ / „Vierundzwierten“ → ein Stück, der lange Satz danach bleibt eigenständig
+    out = merge_short([seg(3, 5), seg(6, 9), seg(12, 14), seg(15, 30), seg(36, 38)], audio)
+    assert [(s.start // sr, s.end // sr) for s in out] == [(3, 14), (15, 30), (36, 38)]

@@ -32,7 +32,7 @@ def server(tmp_path_factory):
     port = _free_port()
     env = {**os.environ, "ASR_BACKEND": "fake", "DATA_DIR": str(data), "MODELS_DIR": str(data / "models"),
            "MITSCHRIFT_ENV_FILE": str(data / "none.env"), "VAD_MIN_SILENCE_MS": "600", "PORT": str(port),
-           "DIARIZATION": "0"}
+           "DIARIZATION": "0", "OFFLINE_MERGE_SHORT_S": "0"}
     proc = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
                             cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     url = f"http://127.0.0.1:{port}"
@@ -154,7 +154,7 @@ def test_upload_detail_edit_and_summary_import(page, server):
 
     # Protokoll ohne KI → Art wählen → NOVA-Dialog
     page.click("#ai-sum")
-    page.click(".menu-list [data-act=ergebnis]")
+    page.click(".menu-list [data-act='ergebnis:standard']")
     page.wait_for_selector("#m-in")
     page.fill("#m-in", "## Ergebnisse\n- Korrigiert per UI. [S0]\n- Ohne Beleg.\n## Beschlüsse\nkeine")
     page.click("#m-ok")
@@ -209,7 +209,7 @@ def test_info_pages(page, server):
     page.wait_for_timeout(600)
     _shot(page, "faq")
     page.wait_for_selector("#doc details")
-    assert "Häufige Fragen" in page.inner_text(".page-head")
+    assert "Häufige Fragen" in page.text_content(".page-head")
     for tab, needle in [("technik", "Live-Aufnahme"), ("infrastruktur", "Schaubild"), ("datenschutz", "Fragen an den"),
                         ("sicherheit", "Schwächen"), ("personalrat", "Mitbestimmung")]:
         page.goto(server + f"/#/infos/{tab}")

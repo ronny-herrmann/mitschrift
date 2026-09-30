@@ -61,9 +61,29 @@ class Diarizer:
             raise RuntimeError("Konfiguration der Sprechererkennung ungültig")
         self._sd = sherpa_onnx.OfflineSpeakerDiarization(cfg)
         self._lock = threading.Lock()
+        self._parts = (seg, emb, threads, threshold)
+        self._n = num_speakers if num_speakers > 0 else -1
 
-    def turns(self, audio: np.ndarray) -> list[tuple[float, float, int]]:
+    def _set_speakers(self, n: int) -> None:
+        """Feste Sprecherzahl (aus den eingetragenen Teilnehmenden) oder automatisch (-1)."""
+        import sherpa_onnx
+        n = n if n and n > 0 else -1
+        if n == self._n:
+            return
+        seg, emb, threads, threshold = self._parts
+        cfg = sherpa_onnx.OfflineSpeakerDiarizationConfig(
+            segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+                pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(model=str(seg)), num_threads=threads),
+            embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(emb), num_threads=threads),
+            clustering=sherpa_onnx.FastClusteringConfig(num_clusters=n, threshold=threshold),
+            min_duration_on=0.3, min_duration_off=0.5)
+        self._sd.set_config(cfg)
+        self._n = n
+
+    def turns(self, audio: np.ndarray, num_speakers: int = 0) -> list[tuple[float, float, int]]:
         with self._lock:
+            if num_speakers:
+                self._set_speakers(num_speakers)
             res = self._sd.process(audio.astype(np.float32)).sort_by_start_time()
         return [(float(r.start), float(r.end), int(r.speaker)) for r in res]
 
@@ -82,12 +102,13 @@ def _speaker_at(turns: list[tuple[float, float, int]], a: float, b: float) -> in
 
 
 def _drop_minor_speakers(turns: list[tuple[float, float, int]]) -> list[tuple[float, float, int]]:
-    """Sprecher mit sehr wenig Redezeit (< 4 % und < 6 s) sind meist Fehlzuordnungen → Nachbar übernimmt."""
+    """Sprecher mit sehr wenig Redezeit (< 8 s, oder < 30 s und < 3 %) sind meist Fehlzuordnungen → Nachbar übernimmt."""
     total: dict[int, float] = {}
     for s, e, spk in turns:
         total[spk] = total.get(spk, 0.0) + (e - s)
     all_t = sum(total.values()) or 1.0
-    minor = {spk for spk, t in total.items() if t < 6.0 and t / all_t < 0.04 and len(total) > 1}
+    # Sehr kleine „Sprecher“ sind fast immer dieselbe Person mit anderer Stimmlage/Entfernung zum Mikrofon
+    minor = {spk for spk, t in total.items() if len(total) > 1 and (t < 8.0 or (t < 30.0 and t / all_t < 0.03))}
     if not minor:
         return turns
     out = []

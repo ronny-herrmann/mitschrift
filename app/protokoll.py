@@ -389,7 +389,24 @@ def _liste(items: list[dict], leer: str = "keine") -> list[str]:
     return [f"- {it['text']} {_ref(it)}" for it in items] or [leer]
 
 
-def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: list[str] | None = None) -> str:
+# Länge: wie viele belegte Aussagen je Abschnitt/TOP (None = alle). Beschlüsse und Aufgaben bleiben immer vollständig.
+LAENGEN = {"kompakt": {"je": 2, "kern": 5, "sonst": 3},
+           "standard": {"je": 5, "kern": 8, "sonst": 6},
+           "ausfuehrlich": {"je": None, "kern": 14, "sonst": None}}
+
+
+def _auswahl(items: list, n: int | None) -> list:
+    """n Einträge gleichmäßig über die Liste verteilt (Reihenfolge bleibt) – so bleibt der ganze Verlauf abgedeckt."""
+    if n is None or len(items) <= n:
+        return items
+    if n == 1:
+        return items[:1]
+    pos = sorted({round(i * (len(items) - 1) / (n - 1)) for i in range(n)})
+    return [items[p] for p in pos]
+
+
+def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: list[str] | None = None,
+             laenge: str = "ausfuehrlich") -> str:
     """Protokoll aus geprüften Zeilen bauen – rein mechanisch, ohne KI. Mit Tagesordnung gliedert sich
     das Ergebnisprotokoll nach deren Punkten."""
     alle = [it for a in abschnitte for it in a["items"]]
@@ -397,26 +414,31 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: li
     themen, aussagen = typ("THEMA"), typ("AUSSAGE")
     beschl, aufg, fragen = typ("BESCHLUSS"), typ("AUFGABE"), typ("FRAGE")
     seg = {s.idx: s for s in t.segments}
+    L = LAENGEN.get(laenge, LAENGEN["ausfuehrlich"])
     out: list[str] = []
     if style == "zusammenfassung":
         ueberblick = " ".join(f"{it['text'].rstrip('.')}. {_ref(it)}" for it in themen[:3])
         out += ["## Überblick", ueberblick or "Kein Thema eindeutig erkennbar."]
         # je Abschnitt die ersten Aussagen, insgesamt höchstens 8 – verteilt über das ganze Gespräch
         kurz: list[dict] = []
-        per = max(1, 8 // max(1, len(abschnitte)))
+        per = max(1, -(-L["kern"] // max(1, len(abschnitte))))
         for a in abschnitte:
-            kurz += [it for it in a["items"] if it["typ"] == "AUSSAGE"][:per]
-        out += ["", "## Kernaussagen", *_liste(_dedupe(kurz)[:8])]
+            kurz += _auswahl([it for it in a["items"] if it["typ"] == "AUSSAGE"], per)
+        out += ["", "## Kernaussagen", *_liste(_auswahl(_dedupe(kurz), L["kern"]))]
         out += ["", "## Entscheidungen", *_liste(beschl), "", "## Aufgaben", *_liste(aufg),
                 "", "## Offene Fragen", *_liste(fragen)]
     elif style == "ergebnis" and tagesordnung:
         for n, titel in enumerate(tagesordnung, 1):
             sub = _dedupe([it for it in alle if it.get("top") == n and it["typ"] != "THEMA"])
+            wichtig = [it for it in sub if it["typ"] in ("BESCHLUSS", "AUFGABE")]
+            rest_top = _auswahl([it for it in sub if it["typ"] not in ("BESCHLUSS", "AUFGABE")], L["je"])
+            sub = [it for it in sub if it in wichtig or it in rest_top]
             out += [f"## TOP {n}: {titel}"]
             order = {"BESCHLUSS": "Beschluss: ", "AUFGABE": "Aufgabe: ", "FRAGE": "Offen: "}
             out += [f"- {order.get(it['typ'], '')}{it['text']} {_ref(it)}" for it in sub] or ["Dazu wurde nichts Belegbares gesagt."]
             out.append("")
         rest = _dedupe([it for it in alle if it["typ"] != "THEMA" and not (1 <= (it.get("top") or 0) <= len(tagesordnung))])
+        rest = _auswahl(rest, L["sonst"])
         if rest:
             out += ["## Sonstiges", *[f"- {it['text']} {_ref(it)}" for it in rest], ""]
         out += ["## Beschlüsse im Überblick", *_liste(beschl), "", "## Aufgaben", *_liste(aufg)]
@@ -424,7 +446,7 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: li
         out += ["## Themen", *([f"{i}. {it['text']} {_ref(it)}" for i, it in enumerate(themen, 1)] or ["keine"])]
         out += ["", "## Ergebnisse"]
         for i, a in enumerate(abschnitte, 1):
-            sub = [it for it in a["items"] if it["typ"] == "AUSSAGE"]
+            sub = _auswahl([it for it in a["items"] if it["typ"] == "AUSSAGE"], L["je"])
             if not sub:
                 continue
             th = next((it for it in a["items"] if it["typ"] == "THEMA"), None)
@@ -439,6 +461,8 @@ def assemble(t: Transcript, style: str, abschnitte: list[dict], tagesordnung: li
             th = next((it for it in a["items"] if it["typ"] == "THEMA"), None)
             out.append(f"## {fmt_time(a['start'])} – {fmt_time(a['end'])}" + (f": {th['text']}" if th else ""))
             rows = [it for it in a["items"] if it["typ"] in ("AUSSAGE", "BESCHLUSS", "AUFGABE", "FRAGE")]
+            keep = set(map(id, _auswahl([it for it in rows if it["typ"] == "AUSSAGE"], L["je"])))
+            rows = [it for it in rows if it["typ"] != "AUSSAGE" or id(it) in keep]
             for it in rows:
                 sp = seg[it["refs"][0]].speaker if it["refs"] and it["refs"][0] in seg else ""
                 label = {"BESCHLUSS": "Beschluss: ", "AUFGABE": "Aufgabe: ", "FRAGE": "Offene Frage: "}.get(it["typ"], "")
@@ -482,9 +506,10 @@ def extract(t: Transcript, llm: LLMClient, max_chars: int = 5000, progress=None,
 
 def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars: int = 5000,
                      progress=None, cache: dict | None = None, workers: int = 2,
-                     tagesordnung: list[str] | None = None) -> dict:
+                     tagesordnung: list[str] | None = None, laenge: str = "standard") -> dict:
     """Belegte Protokollerstellung. Mit gültigem Zwischenspeicher (cache) ohne erneuten KI-Aufruf."""
     style = style if style in STYLES else "zusammenfassung"
+    laenge = laenge if laenge in LAENGEN else "standard"
     if cache and cache.get("hash") == transcript_hash(t, tagesordnung):
         ex = cache
     else:
@@ -495,9 +520,10 @@ def create_protokoll(t: Transcript, style: str, llm: LLMClient | None, max_chars
     if not n_ok:
         raise ValueError("Im Transkript wurden keine belegbaren Inhalte gefunden. Es wird kein Protokoll erzeugt, "
                          "damit nichts erfunden wird.")
-    md = assemble(t, style, ex["abschnitte"], tagesordnung)
+    md = assemble(t, style, ex["abschnitte"], tagesordnung, laenge)
     return {
         "style": style,
+        "laenge": laenge,
         "protokoll_md": md,
         "pruefung": verify(t, md),
         "verworfen": len(ex["verworfen"]),

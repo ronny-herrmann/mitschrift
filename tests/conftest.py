@@ -24,6 +24,7 @@ def app_env(tmp_path_factory):
     os.environ["LIVE_FINAL_PASS"] = "1"
     os.environ["VAD_MIN_SILENCE_MS"] = "600"
     os.environ["DIARIZATION"] = "0"
+    os.environ["OFFLINE_MERGE_SHORT_S"] = "0"
     os.environ["LIVE_PARTIALS"] = "1"
     return data
 

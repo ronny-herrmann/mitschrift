@@ -156,7 +156,8 @@ def _load_models_once() -> None:
         transcriber = Transcriber(backend, settings, glossar=lambda: state.store.get_setting("glossar", []),
                                   final_factory=final_factory)
         state.model_info = backend.info()
-        state.jobs = JobQueue(transcriber, state.store, settings, llm_factory=get_llm, glossar_for=glossar_for)
+        state.jobs = JobQueue(transcriber, state.store, settings, llm_factory=get_llm, glossar_for=glossar_for,
+                              speakers_for=lambda tid: len(_meta(tid).get("teilnehmende") or []))
         state.transcriber = transcriber
         state.jobs.resume_unfinished()
         state.startup_seconds = round(time.perf_counter() - t0, 1)
@@ -602,6 +603,7 @@ async def nova_prompt(tid: str, style: str = "zusammenfassung"):
 
 class ProtokollRequest(BaseModel):
     style: str = "zusammenfassung"
+    laenge: str = "standard"   # kompakt | standard | ausfuehrlich
 
 
 @app.post("/api/transcripts/{tid}/protokoll", dependencies=[Depends(require_auth)])
@@ -620,7 +622,7 @@ async def make_protokoll(tid: str, body: ProtokollRequest):
         if cache and cache.get("hash") == transcript_hash(t, _meta(tid).get("tagesordnung") or []):
             state.tasks[tid]["cached"] = True
         content = create_protokoll(t, style, get_llm(), progress=progress, cache=cache, workers=settings.llm_parallel,
-                                   tagesordnung=_meta(tid).get("tagesordnung") or [])
+                                   tagesordnung=_meta(tid).get("tagesordnung") or [], laenge=body.laenge)
         state.store.set_setting(f"extrakt:{tid}", content.pop("extrakt"))
         return state.store.save_protokoll(tid, style, "entwurf", content)
 
@@ -839,12 +841,11 @@ def tagesordnung_zeilen(text: str) -> list[str]:
 @app.post("/api/tagesordnung/lesen", dependencies=[Depends(require_auth)])
 async def tagesordnung_lesen(file: UploadFile = File(...)):
     """Tagesordnung aus Word, PDF oder Text lesen → Liste der Punkte (noch nicht gespeichert)."""
-    from .glossar import read_text
+    from .glossar import read_agenda
     try:
-        text = read_text(file.filename or "", await file.read())
+        punkte = _clean_list(read_agenda(file.filename or "", await file.read()))
     except ValueError as e:
         raise HTTPException(400, str(e))
-    punkte = _clean_list(tagesordnung_zeilen(text))
     if not punkte:
         raise HTTPException(400, "In der Datei wurden keine Tagesordnungspunkte gefunden.")
     return punkte
