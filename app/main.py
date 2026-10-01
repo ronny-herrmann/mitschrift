@@ -212,6 +212,28 @@ async def security_headers(request: Request, call_next):
     return response
 
 
+# --- Methoden-Überschreibung ----------------------------------------------------------
+# Manche Behörden-Proxys lassen nur GET und POST durch und antworten auf PATCH/PUT/DELETE mit
+# „405 Method Not Allowed“. Die Oberfläche schickt diese daher als POST mit ?_method=PATCH (o. ä.).
+class MethodOverride:
+    ERLAUBT = {b"PATCH", b"PUT", b"DELETE"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and scope.get("method") == "POST":
+            from urllib.parse import parse_qsl
+            qs = parse_qsl((scope.get("query_string") or b"").decode("latin-1"))
+            m = next((v.upper() for k, v in qs if k == "_method"), "")
+            if m.encode() in self.ERLAUBT:
+                scope = dict(scope, method=m)
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(MethodOverride)
+
+
 # --- Anmeldung ---------------------------------------------------------------------
 async def require_auth(request: Request):
     if not auth.valid_token(request.cookies.get(auth.COOKIE)):

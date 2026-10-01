@@ -29,6 +29,9 @@
     clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.className = 'toast'), 12000);
   };
   const api = async (path, opts = {}) => {
+    // PATCH/PUT/DELETE als POST mit ?_method=… – manche Behörden-Proxys lassen nur GET/POST durch
+    const m = (opts.method || 'GET').toUpperCase();
+    if (['PATCH', 'PUT', 'DELETE'].includes(m)) { path += (path.includes('?') ? '&' : '?') + '_method=' + m; opts = { ...opts, method: 'POST' }; }
     const r = await fetch(path, { headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) }, ...opts });
     if (r.status === 401) { location.href = '/login'; throw new Error('Bitte anmelden'); }
     if (!r.ok) { let msg = r.statusText; try { const j = await r.json(); msg = j.detail || JSON.stringify(j); } catch { } const e = new Error(msg); e.status = r.status; throw e; }

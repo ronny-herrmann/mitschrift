@@ -386,3 +386,14 @@ def test_audio_download(client):
     assert r.status_code == 200 and r.content[:4] == b"RIFF"
     assert "attachment" in r.headers["content-disposition"] and "Audio-Test - Audio.wav" in r.headers["content-disposition"]
     assert "attachment" not in client.get(f"/api/transcripts/{tid}/audio").headers.get("content-disposition", "")
+
+
+def test_method_override_for_restrictive_proxies(client):
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}).json()["id"]
+    wait_done(client, tid)
+    r = client.post(f"/api/transcripts/{tid}?_method=PATCH", json={"title": "Per POST umbenannt"})
+    assert r.status_code == 200, r.text
+    assert client.get(f"/api/transcripts/{tid}").json()["title"] == "Per POST umbenannt"
+    assert client.post(f"/api/transcripts/{tid}?_method=DELETE").status_code == 200
+    assert client.get(f"/api/transcripts/{tid}").status_code == 404
