@@ -202,6 +202,10 @@
             <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
             <label>Glossar<select id="r-glossar"><option value="alle">Alle Ämter</option></select></label>
           </div>
+          <div class="sys-audio hidden" id="r-sys-wrap">
+            <label class="consent sys"><input type="checkbox" id="r-sys"><span><strong>Online-Besprechung (Teams, Webex …)</strong> – auch den Ton des Computers aufnehmen, damit die anderen Teilnehmenden zu hören sind</span></label>
+            <div class="sys-hint hidden" id="r-sys-hint">Beim Start fragt der Browser, was geteilt wird: <b>„Gesamter Bildschirm“</b> wählen und unten <b>„Systemaudio teilen“</b> einschalten. Läuft Teams im Browser: den Teams-Tab wählen und „Tab-Audio teilen“ einschalten. Aufgenommen wird nur der Ton, kein Bild.</div>
+          </div>
           ${sitzungsFelder('r')}
           <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
           <div class="rec-start">
@@ -234,14 +238,35 @@
       hint.textContent = 'Kein Mikrofonzugriff möglich – die Seite muss über HTTPS (oder localhost) geöffnet werden.';
       return;
     }
-    try {
-      // Mikrofone mit verständlichem Namen; „Standard“/„Kommunikation“-Doppel und leere Namen (vor der Freigabe) zusammenfassen
-      const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
-      const named = devs.filter((d) => d.label && !['default', 'communications'].includes(d.deviceId));
-      const std = devs.find((d) => d.deviceId === 'default' && d.label);
-      micSel.options[0].textContent = std ? std.label.replace(/^(Standard|Default)\s*[-–]\s*/i, '') : (named.length === 1 ? named[0].label : 'Mikrofon dieses Geräts');
-      if (named.length > 1) named.forEach((d) => { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label; micSel.appendChild(o); });
-    } catch { }
+    // Mikrofone auflisten. Vor der ersten Freigabe verraten Browser keine Namen – dann „Mikrofon 1, 2 …“
+    // und nach der Freigabe (Start) bzw. beim Ein-/Ausstecken neu füllen.
+    async function fillMics() {
+      try {
+        const keep = micSel.value;
+        const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+        const std = devs.find((d) => d.deviceId === 'default');
+        const real = devs.filter((d) => !['default', 'communications'].includes(d.deviceId));
+        micSel.innerHTML = '';
+        const add = (v, l) => { const o = document.createElement('option'); o.value = v; o.textContent = l; micSel.appendChild(o); };
+        add('', std && std.label ? 'Standard – ' + std.label.replace(/^(Standard|Default)\s*[-–]\s*/i, '') : 'Standard-Mikrofon');
+        real.forEach((d, i) => add(d.deviceId, d.label || `Mikrofon ${i + 1}`));
+        if ([...micSel.options].some((o) => o.value === keep)) micSel.value = keep;
+        $('#r-mic-more')?.classList.toggle('hidden', !real.some((d) => !d.label));
+      } catch { }
+    }
+    micSel.insertAdjacentHTML('afterend', '<button type="button" class="linkbtn small hidden" id="r-mic-more">Namen der Mikrofone anzeigen</button>');
+    $('#r-mic-more').addEventListener('click', async () => {
+      try { const s0 = await navigator.mediaDevices.getUserMedia({ audio: true }); s0.getTracks().forEach((t) => t.stop()); } catch (e) { toast('Mikrofon nicht freigegeben: ' + e.message, true); }
+      fillMics();
+    });
+    await fillMics();
+    navigator.mediaDevices.addEventListener?.('devicechange', fillMics);
+    // Ton des Computers (Online-Besprechungen) – nur am Computer mit Chrome/Edge möglich
+    const canSys = !!navigator.mediaDevices.getDisplayMedia && !/Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+    if (canSys) {
+      $('#r-sys-wrap').classList.remove('hidden');
+      $('#r-sys').addEventListener('change', (e) => $('#r-sys-hint').classList.toggle('hidden', !e.target.checked));
+    }
     const updateStart = () => {
       startBtn.disabled = !consent.checked || !health.ready;
       hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Bereit – zum Starten auf den roten Knopf tippen.' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
@@ -251,7 +276,7 @@
     document.addEventListener('health', updateStart);
     updateStart();
 
-    let ctx, node, analyser, stream, ws, tick, raf, wakeLock = null, finished = false, lastLevels = [];
+    let ctx, node, analyser, stream, sysStream = null, ws, tick, raf, wakeLock = null, finished = false, lastLevels = [];
     let paused = false, elapsed = 0, runStart = 0, tid = null;
     const text = $('#r-text');
     const setStatus = (s) => { $('#r-status').textContent = s; };
@@ -316,12 +341,34 @@
     }
 
     async function start() {
+      const wantSys = $('#r-sys')?.checked;
+      if (wantSys) {
+        // Zuerst den Ton des Computers holen (der Browser fragt, was geteilt wird); das Bild wird sofort verworfen
+        try {
+          sysStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            systemAudio: 'include', selfBrowserSurface: 'exclude', surfaceSwitching: 'exclude' });
+          sysStream.getVideoTracks().forEach((t) => { t.enabled = false; });   // Bild wird nicht verwendet (Stoppen könnte in manchen Browsern auch den Ton beenden)
+          if (!sysStream.getAudioTracks().length) {
+            sysStream = null;
+            if (!await confirmDialog({ title: 'Kein Computerton geteilt', text: 'Im Teilen-Fenster war <b>„Systemaudio teilen“</b> (bzw. „Tab-Audio teilen“) nicht eingeschaltet. Dann wird nur Ihr Mikrofon aufgenommen – die anderen Teilnehmenden der Online-Besprechung fehlen.', ok: 'Nur mit Mikrofon starten', danger: false })) return;
+          }
+        } catch (e) { toast('Teilen abgebrochen – es wurde nichts aufgenommen.', true); return; }
+      }
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: micSel.value ? { exact: micSel.value } : undefined, channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      } catch (e) { toast('Mikrofon nicht freigegeben: ' + e.message, true); return; }
+      } catch (e) { toast('Mikrofon nicht freigegeben: ' + e.message, true); sysStream?.getTracks().forEach((t) => t.stop()); sysStream = null; return; }
+      fillMics();   // jetzt mit Gerätenamen
       try { ctx = new AudioContext({ sampleRate: 16000 }); } catch { ctx = new AudioContext(); }
       await ctx.audioWorklet.addModule('/static/worklet.js');
-      const src = ctx.createMediaStreamSource(stream);
+      // Mikrofon und ggf. Computerton zu einem Mono-Signal zusammenführen
+      const mix = ctx.createGain(); mix.channelCount = 1; mix.channelCountMode = 'explicit'; mix.channelInterpretation = 'speakers';
+      ctx.createMediaStreamSource(stream).connect(mix);
+      if (sysStream) {
+        const sysGain = ctx.createGain(); sysGain.gain.value = 0.9;
+        ctx.createMediaStreamSource(new MediaStream(sysStream.getAudioTracks())).connect(sysGain).connect(mix);
+        sysStream.getAudioTracks()[0].addEventListener('ended', () => { if (recordingActive) toast('Das Teilen des Computertons wurde beendet – ab jetzt nur noch Mikrofon.', true); });
+      }
+      const src = mix;
       analyser = ctx.createAnalyser(); analyser.fftSize = 1024; src.connect(analyser);
       node = new AudioWorkletNode(ctx, 'pcm16-processor'); src.connect(node);
       const title = $('#r-title').value.trim() || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -363,6 +410,7 @@
       recordingActive = false; clearInterval(tick); cancelAnimationFrame(raf);
       try { node && node.disconnect(); } catch { }
       try { stream && stream.getTracks().forEach((t) => t.stop()); } catch { }
+      try { sysStream && sysStream.getTracks().forEach((t) => t.stop()); sysStream = null; } catch { }
       try { ctx && ctx.close(); } catch { }
       try { wakeLock && wakeLock.release(); } catch { }
     }

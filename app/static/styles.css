@@ -698,3 +698,9 @@ details.sitzung summary .s-hint { font-weight: 400; font-size: var(--fs-xs); col
   .d-meta .chip-btn::after, button.avatar::after { content: ""; position: absolute; inset: -7px -2px; }
 }
 @media (min-width: 901px) { .brand-name { font-size: 16px; letter-spacing: .03em; } }
+
+/* Online-Besprechung: Computerton mit aufnehmen */
+.sys-audio { margin-top: .9rem; padding: .65rem .85rem; border: 1px solid var(--accent-line); background: var(--accent-soft); border-radius: 10px; }
+.sys-audio .consent.sys { margin: 0; font-size: var(--fs-sm); }
+.sys-hint { margin: .5rem 0 0 1.9rem; font-size: var(--fs-sm); color: var(--muted); line-height: 1.45; }
+#r-mic-more { align-self: flex-start; margin-top: .2rem; font-size: var(--fs-xs); }
