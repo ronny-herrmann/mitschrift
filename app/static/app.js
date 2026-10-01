@@ -202,11 +202,11 @@
             <label>Mikrofon<select id="r-mic"><option value="">Standard</option></select></label>
             <label>Glossar<select id="r-glossar"><option value="alle">Alle Ämter</option></select></label>
           </div>
-          <div class="sys-audio hidden" id="r-sys-wrap">
-            <label class="consent sys"><input type="checkbox" id="r-sys"><span><strong>Online-Besprechung (Teams, Webex …)</strong> – auch den Ton des Computers aufnehmen, damit die anderen Teilnehmenden zu hören sind</span></label>
-            <div class="sys-hint hidden" id="r-sys-hint">Beim Start fragt der Browser, was geteilt wird: <b>„Gesamter Bildschirm“</b> wählen und unten <b>„Systemaudio teilen“</b> einschalten. Läuft Teams im Browser: den Teams-Tab wählen und „Tab-Audio teilen“ einschalten. Aufgenommen wird nur der Ton, kein Bild.</div>
-          </div>
           ${sitzungsFelder('r')}
+          <div class="sys-audio hidden" id="r-sys-wrap">
+            <label class="consent"><input type="checkbox" id="r-sys"><span>Online-Besprechung (Webex, Teams …): Ton des Computers mit aufnehmen</span></label>
+            <div class="sys-hint hidden" id="r-sys-hint">Beim Start „Gesamter Bildschirm“ wählen und „Systemaudio teilen“ einschalten – aufgenommen wird nur der Ton.</div>
+          </div>
           <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
           <div class="rec-start">
             <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
