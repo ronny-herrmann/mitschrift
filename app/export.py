@@ -106,8 +106,53 @@ VORLAGEN_DIR = __import__("pathlib").Path(__file__).parent / "templates"
 
 
 def vorlagen() -> list[str]:
-    """Verfügbare Word-Briefköpfe (Dateinamen ohne Endung)."""
+    """Mitgelieferte Word-Briefköpfe (Dateinamen ohne Endung)."""
     return sorted(p.stem for p in VORLAGEN_DIR.glob("*.docx")) if VORLAGEN_DIR.exists() else []
+
+
+EIGENE_DIR = None   # wird von main.py gesetzt: DATA_DIR/vorlagen (eigene, hochgeladene Briefköpfe)
+
+
+def eigene_vorlagen() -> list[dict]:
+    """Hochgeladene Briefköpfe: [{id, name}] – liegen auf dem Server, nicht im Quellcode."""
+    import json
+    if not EIGENE_DIR or not EIGENE_DIR.exists():
+        return []
+    out = []
+    for f in sorted(EIGENE_DIR.glob("*.docx")):
+        meta = f.with_suffix(".json")
+        name = f.stem
+        if meta.exists():
+            try:
+                name = json.loads(meta.read_text("utf-8")).get("name") or name
+            except Exception:
+                pass
+        out.append({"id": f.stem, "name": name})
+    return out
+
+
+def _vorlage_pfad(vorlage: str | None):
+    """„eigen:<id>“ → hochgeladene Datei, sonst mitgelieferte Vorlage (Standard: Stadt Heilbronn)."""
+    if vorlage and vorlage.startswith("eigen:") and EIGENE_DIR:
+        f = EIGENE_DIR / f"{vorlage[6:]}.docx"
+        if f.exists() and f.parent == EIGENE_DIR:
+            return f, True
+    name = vorlage if vorlage in vorlagen() else (vorlagen()[0] if vorlagen() else None)
+    return (VORLAGEN_DIR / f"{name}.docx", False) if name else (None, False)
+
+
+def _hat_marker(doc) -> bool:
+    texte = [p.text for p in doc.paragraphs] + [c.text for t in doc.tables for r in t.rows for c in r.cells]
+    return any("{{" in x for x in texte)
+
+
+def _body_leeren(doc) -> None:
+    """Inhalt entfernen, Kopf-/Fußzeilen, Seitenränder und Formatvorlagen bleiben."""
+    from docx.oxml.ns import qn
+    body = doc.element.body
+    for el in list(body):
+        if el.tag != qn("w:sectPr"):
+            body.remove(el)
 
 
 def _sdt(paragraph, placeholder: str, tag: str) -> None:
@@ -120,86 +165,111 @@ def _sdt(paragraph, placeholder: str, tag: str) -> None:
     paragraph._p.append(parse_xml(xml))
 
 
+def _alle_absaetze(doc):
+    """Absätze im Text, in Tabellen sowie in Kopf- und Fußzeilen."""
+    def aus(container):
+        for p in container.paragraphs:
+            yield p
+        for tbl in container.tables:
+            for row in tbl.rows:
+                for cell in row.cells:
+                    yield from aus(cell)
+    yield from aus(doc)
+    for sec in doc.sections:
+        for part in (sec.header, sec.footer, sec.first_page_header, sec.first_page_footer):
+            try:
+                yield from aus(part)
+            except Exception:
+                pass
+
+
 def _fill_marker(doc, marker: str, text: str | None = None, placeholder: str = "", tag: str = "") -> None:
-    """Platzhalter {{…}} in den Tabellen der Vorlage ersetzen – durch Text oder ein ausfüllbares Feld."""
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
-                    if marker not in p.text:
-                        continue
-                    runs = p.runs
-                    if text is not None:
-                        for r in runs[1:]:
-                            r._r.getparent().remove(r._r)
-                        lines = text.split("\n")
-                        runs[0].text = lines[0]
-                        for extra in lines[1:]:
-                            runs[0].add_break()
-                            runs[0].add_text(extra)
-                    else:
-                        for r in runs:
-                            r._r.getparent().remove(r._r)
-                        _sdt(p, placeholder, tag)
+    """Platzhalter {{…}} der Vorlage ersetzen – durch Text oder ein ausfüllbares Feld."""
+    for p in _alle_absaetze(doc):
+        if marker not in p.text:
+            continue
+        runs = p.runs
+        if marker not in "".join(r.text for r in runs) or not runs:
+            continue
+        if text is not None:
+            full = "".join(r.text for r in runs).replace(marker, text)
+            for r in runs[1:]:
+                r._r.getparent().remove(r._r)
+            lines = full.split("\n")
+            runs[0].text = lines[0]
+            for extra in lines[1:]:
+                runs[0].add_break()
+                runs[0].add_text(extra)
+        else:
+            rest = "".join(r.text for r in runs).replace(marker, "")
+            for r in runs[1:]:
+                r._r.getparent().remove(r._r)
+            runs[0].text = rest
+            _sdt(p, placeholder, tag)
 
 
 def _base_document(t: Transcript, titel: str, vorlage: str | None):
-    """Neues Dokument – mit Heilbronner Briefkopf, wenn eine Vorlage vorhanden ist."""
+    """Neues Dokument auf Basis eines Briefkopfs. Rückgabe: (Dokument, Titelkasten vorhanden?)."""
     from docx import Document
     from docx.shared import Pt
-    name = vorlage if vorlage in vorlagen() else (vorlagen()[0] if vorlagen() else None)
-    if name:
-        doc = Document(str(VORLAGEN_DIR / f"{name}.docx"))
-        datum = local_dt(t.created_at)[:10] if t.created_at else ""
-        _fill_marker(doc, "{{DATUM}}", datum)
-        _fill_marker(doc, "{{TITEL}}", titel)
-        _fill_marker(doc, "{{AMT}}", placeholder="Amt eintragen", tag="amt")
-        _fill_marker(doc, "{{GZ}}", placeholder="Gz. eintragen", tag="gz")
-        _fill_marker(doc, "{{TELEFON}}", placeholder="Telefon eintragen", tag="telefon")
-        return doc, True
+    pfad, eigen = _vorlage_pfad(vorlage)
+    if pfad:
+        doc = Document(str(pfad))
+        if not eigen or _hat_marker(doc):
+            hat_titel = any("{{TITEL}}" in par.text for par in _alle_absaetze(doc))
+            datum = local_dt(t.created_at)[:10] if t.created_at else ""
+            _fill_marker(doc, "{{DATUM}}", datum)
+            _fill_marker(doc, "{{TITEL}}", titel)
+            _fill_marker(doc, "{{AMT}}", placeholder="Amt eintragen", tag="amt")
+            _fill_marker(doc, "{{GZ}}", placeholder="Gz. eintragen", tag="gz")
+            _fill_marker(doc, "{{TELEFON}}", placeholder="Telefon eintragen", tag="telefon")
+            if hat_titel:
+                return doc, True
+        else:
+            # eigener Briefkopf ohne Platzhalter: nur Kopf-/Fußzeile, Ränder und Schriften übernehmen
+            _body_leeren(doc)
+        p = doc.add_paragraph()
+        r = p.add_run(titel.replace("\n", " – "))
+        r.bold = True
+        r.font.size = Pt(16)
+        return doc, False
     doc = Document()
     doc.styles["Normal"].font.name = "Source Sans Pro"
     doc.styles["Normal"].font.size = Pt(11)
-    doc.add_heading(titel.replace("\n", " – "), level=1)
+    _heading(doc, titel.replace("\n", " – "), 1)
     return doc, False
 
 
-def _aufgaben_tabelle(doc, rows: list[list[str]]) -> None:
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
-    tbl = doc.add_table(rows=1, cols=3)
+def _style_da(doc, name: str) -> bool:
     try:
-        tbl.style = doc.styles["Table Grid"]
+        doc.styles[name]
+        return True
     except KeyError:
-        pass
-    for cell, txt in zip(tbl.rows[0].cells, ("Wer", "Was", "Bis wann")):
-        cell.text = ""
-        r = cell.paragraphs[0].add_run(txt)
-        r.bold = True
-        shd = OxmlElement("w:shd")
-        shd.set(qn("w:val"), "clear"); shd.set(qn("w:color"), "auto"); shd.set(qn("w:fill"), "F2F2F2")
-        cell._tc.get_or_add_tcPr().append(shd)
-    for row in rows:
-        row = (row + ["", "", ""])[:3]
-        cells = tbl.add_row().cells
-        for cell, txt in zip(cells, row):
-            cell.text = txt if txt and txt not in ("-", "–") else "–"
-    from docx.shared import Cm
-    for row in tbl.rows:
-        for cell, w in zip(row.cells, (Cm(3.5), Cm(9.5), Cm(3))):
-            cell.width = w
-    doc.add_paragraph()
+        return False
+
+
+def _heading(doc, text: str, level: int):
+    """Überschrift – auch in fremden Vorlagen ohne Überschrift-Formatvorlagen."""
+    from docx.shared import Pt
+    if _style_da(doc, f"Heading {level}"):
+        return doc.add_heading(text, level=level)
+    p = doc.add_paragraph()
+    r = p.add_run(text)
+    r.bold = True
+    r.font.size = Pt({1: 16, 2: 14, 3: 12.5}.get(level, 11.5))
+    p.paragraph_format.space_before = Pt(10)
+    return p
 
 
 def _bullet(doc, text: str, briefkopf: bool):
     from docx.shared import Cm
-    if briefkopf:
-        p = doc.add_paragraph(style="List Paragraph")
+    if not briefkopf and _style_da(doc, "List Bullet"):
+        p = doc.add_paragraph(style="List Bullet")
+    else:
+        p = doc.add_paragraph(style="List Paragraph") if _style_da(doc, "List Paragraph") else doc.add_paragraph()
         p.paragraph_format.left_indent = Cm(0.6)
         p.paragraph_format.first_line_indent = Cm(-0.4)
         p.add_run("•\u00a0\u00a0")
-    else:
-        p = doc.add_paragraph(style="List Bullet")
     _md_inline(p, text)
     return p
 
@@ -246,7 +316,7 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
     else:
         if protokoll_md:
             if not briefkopf:  # im Briefkopf steht die Art schon im Titelkasten
-                doc.add_heading(protokoll_name, level=2)
+                _heading(doc, protokoll_name, 2)
             note = doc.add_paragraph((pruefstatus + ". " if pruefstatus else "")
                                      + "Jede Aussage wurde automatisch gegen das Transkript geprüft.")
             note.runs[0].font.size = Pt(9)
@@ -269,11 +339,11 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                 if line.startswith("## "):
                     section = line[3:].strip()
                 if line.startswith("### "):
-                    doc.add_heading(line[4:], level=4)
+                    _heading(doc, line[4:], 4)
                 elif line.startswith("## "):
-                    doc.add_heading(line[3:], level=3)
+                    _heading(doc, line[3:], 3)
                 elif line.startswith("# "):
-                    doc.add_heading(line[2:], level=2)
+                    _heading(doc, line[2:], 2)
                 elif line.startswith(("- ", "* ")):
                     _bullet(doc, line[2:], briefkopf)
                 else:
@@ -284,7 +354,7 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                 return buf.getvalue()
             doc.add_page_break()
 
-        doc.add_heading("Transkript", level=2)
+        _heading(doc, "Transkript", 2)
         for s in t.segments:
             p = doc.add_paragraph()
             r = p.add_run(f"[{fmt_time(s.start)}] ")

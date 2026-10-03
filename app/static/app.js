@@ -106,7 +106,7 @@
     e.stopPropagation();
     $$('.menu-list').forEach((m) => m.remove());
     const m = document.createElement('div'); m.className = 'menu-list ' + (mobile ? 'down' : 'up');
-    m.innerHTML = `${mobile ? `<div class="menu-status"><span class="m-dot ${($('#sys').className.match(/\b(ok|loading|err)\b/) || [''])[0]}"></span>${esc($('#sys-txt').textContent)}</div>` : ''}<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><hr>
+    m.innerHTML = `${mobile ? `<div class="menu-status"><span class="m-dot ${($('#sys').className.match(/\b(ok|loading|err)\b/) || [''])[0]}"></span>${esc($('#sys-txt').textContent)}</div>` : ''}<a href="#/faq">Häufige Fragen</a><a href="#/infos">Informationen <span class="side-badge">intern</span></a><button data-act="vorlagen">Briefköpfe für Word</button><hr>
       <button data-act="name">${userName() ? 'Namen ändern' : 'Namen eintragen'}</button>${health.auth ? '<button data-act="pw">Zugangspasswort ändern</button><button data-act="logout">Abmelden</button>' : ''}`;
     (mobile ? document.body : e.currentTarget.parentElement).appendChild(m);
     setTimeout(() => document.addEventListener('click', function close(ev) { if (!m.contains(ev.target)) { m.remove(); document.removeEventListener('click', close); } }), 0);
@@ -119,7 +119,43 @@
       }
       if (b.dataset.act === 'logout') { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; }
       if (b.dataset.act === 'pw') passwortDialog();
+      if (b.dataset.act === 'vorlagen') vorlagenDialog();
     });
+  }
+
+  // ================================================================ Eigene Briefköpfe
+  let vorlagenCache = null;
+  const vorlageWahl = () => { try { return localStorage.getItem('protokollant-vorlage') || ''; } catch { return ''; } };
+  async function ladeVorlagen() { try { vorlagenCache = await api('/api/vorlagen'); } catch { vorlagenCache = vorlagenCache || []; } return vorlagenCache; }
+  async function vorlagenDialog() {
+    const liste = await ladeVorlagen();
+    const c = modal.open(`<h2>Briefköpfe für Word</h2>
+      <p class="muted small">Eigene Briefköpfe stehen danach beim Word-Export zur Auswahl. Laden Sie eine Word-Datei (.docx) mit Ihrem Briefkopf hoch – Kopf- und Fußzeile, Logo, Seitenränder und Schriften werden übernommen, der übrige Inhalt nicht. Optional können Sie Platzhalter einsetzen: <code>{{TITEL}}</code>, <code>{{DATUM}}</code>, <code>{{AMT}}</code>, <code>{{GZ}}</code>, <code>{{TELEFON}}</code>.</p>
+      <div class="vl-list">${liste.map((v) => `<div class="vl-row"><span>${esc(v.name)}</span>${v.eigen ? `<button class="btn ghost sm danger-outline" data-del="${esc(v.id)}">Löschen</button>` : '<span class="muted small">mitgeliefert</span>'}</div>`).join('')}</div>
+      <div class="vl-add">
+        <label class="field-label"><span>Name</span><input type="text" id="vl-name" placeholder="z. B. Amt 10.5 – Digitalisierung"></label>
+        <label class="field-label"><span>Word-Datei</span><input type="file" id="vl-file" accept=".docx"></label>
+      </div>
+      <p id="vl-err" class="small" style="color:var(--danger);min-height:1.2em"></p>
+      <div class="modal-actions"><button class="btn" data-x>Schließen</button><button class="btn primary" id="vl-up">Hochladen</button></div>`);
+    $('[data-x]', c).onclick = modal.close;
+    $$('[data-del]', c).forEach((b) => b.onclick = async () => {
+      if (!await confirmDialog({ title: 'Briefkopf löschen?', text: 'Der Briefkopf steht danach beim Word-Export nicht mehr zur Auswahl. Bereits exportierte Dokumente bleiben unverändert.', ok: 'Löschen' })) { vorlagenDialog(); return; }
+      try { await api(`/api/vorlagen/${encodeURIComponent(b.dataset.del)}`, { method: 'DELETE' }); toast('Briefkopf gelöscht'); } catch (e) { toast(e.message, true); }
+      if (vorlageWahl() === b.dataset.del) { try { localStorage.removeItem('protokollant-vorlage'); } catch { } }
+      vorlagenDialog();
+    });
+    $('#vl-up', c).onclick = async () => {
+      const f = $('#vl-file', c).files[0], err = $('#vl-err', c);
+      if (!f) { err.textContent = 'Bitte eine Word-Datei auswählen.'; return; }
+      const fd = new FormData(); fd.append('file', f); fd.append('name', $('#vl-name', c).value.trim());
+      const r = await fetch('/api/vorlagen', { method: 'POST', body: fd });
+      if (!r.ok) { let m = r.statusText; try { m = (await r.json()).detail || m; } catch { } err.textContent = m; return; }
+      const v = await r.json();
+      try { localStorage.setItem('protokollant-vorlage', v.id); } catch { }
+      toast(`Briefkopf „${v.name}“ hinzugefügt – steht beim Word-Export zur Auswahl`);
+      vorlagenDialog();
+    };
   }
   $('#user-btn').addEventListener('click', (e) => openUserMenu(e, false));
   $('#m-user').addEventListener('click', (e) => openUserMenu(e, true));
@@ -955,19 +991,29 @@
         catch (e) { toast('Titel konnte nicht gespeichert werden: ' + e.message, true); }
       });
       const ex = (q) => `/api/transcripts/${t.id}/export?${q}`;
-      $('#d-export').addEventListener('click', (e) => {
+      $('#d-export').addEventListener('click', async (e) => {
+        const anchor = e.currentTarget;
+        const liste = vorlagenCache || await ladeVorlagen();
+        let wahl = vorlageWahl(); if (!liste.some((v) => v.id === wahl)) wahl = (liste[0] || {}).id || '';
+        const vq = wahl ? `&vorlage=${encodeURIComponent(wahl)}` : '';
         const p = prot(), pn = p ? STYLE_INFO[p.style][0] : 'Protokoll', st = p ? `&style=${p.style}` : '';
         const dis = (label) => `<span class="disabled" title="Zuerst ein Protokoll erstellen">${label}</span>`;
-        openMenu(e.currentTarget, `
-        <div class="menu-label">Word · mit Heilbronner Briefkopf</div>
-        <a href="${ex('format=docx')}">Transkript (mit Zeit &amp; Sprecher)</a>
-        ${p ? `<a href="${ex('format=protokoll' + st)}">${esc(pn)}</a>` : dis('Protokoll')}
-        ${p ? `<a href="${ex('format=docx&protokoll=1' + st)}">Transkript und ${esc(pn)}</a>` : dis('Transkript und Protokoll')}
-        <a href="${ex('format=fliesstext')}">Nur Fließtext</a><hr>
+        const wahlHtml = liste.length > 1 ? `<div class="menu-label">Briefkopf</div><div class="vl-pick">${liste.map((v) => `<button type="button" data-vorlage="${esc(v.id)}" class="${v.id === wahl ? 'on' : ''}">${esc(v.name)}</button>`).join('')}</div>` : '';
+        openMenu(anchor, `${wahlHtml}
+        <div class="menu-label">Word${liste.length > 1 ? '' : ' · mit Heilbronner Briefkopf'}</div>
+        <a href="${ex('format=docx' + vq)}">Transkript (mit Zeit &amp; Sprecher)</a>
+        ${p ? `<a href="${ex('format=protokoll' + st + vq)}">${esc(pn)}</a>` : dis('Protokoll')}
+        ${p ? `<a href="${ex('format=docx&protokoll=1' + st + vq)}">Transkript und ${esc(pn)}</a>` : dis('Transkript und Protokoll')}
+        <a href="${ex('format=fliesstext' + vq)}">Nur Fließtext</a><hr>
         <div class="menu-label">Weitere Formate</div>
         <a href="${ex('format=txt')}">Text mit Zeit &amp; Sprecher (.txt)</a>
         <a href="${ex('format=md')}">Markdown (.md)</a>
         <a href="${ex('format=srt')}">Untertitel (.srt)</a>`);
+        $$('.menu-list [data-vorlage]').forEach((b) => b.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          try { localStorage.setItem('protokollant-vorlage', b.dataset.vorlage); } catch { }
+          anchor.click();   // Menü mit neuer Auswahl neu öffnen
+        }));
       });
       $('#d-more').addEventListener('click', (e) => openMenu(e.currentTarget, `
         ${hasClean() ? '<button data-act="unclean">KI-Bereinigung verwerfen</button>' : ''}

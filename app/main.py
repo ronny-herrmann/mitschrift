@@ -178,6 +178,9 @@ def _load_models_once() -> None:
 async def lifespan(app: FastAPI):
     state.store = Store(settings.db_path)
     auth.set_store(state.store)
+    from . import export as _export
+    _export.EIGENE_DIR = settings.data_dir / "vorlagen"
+    _export.EIGENE_DIR.mkdir(parents=True, exist_ok=True)
     if not auth.enabled():
         log.warning("ACCESS_PASSWORD ist leer – keine Anmeldung! Nur für localhost geeignet.")
     import threading
@@ -858,6 +861,53 @@ def tagesordnung_zeilen(text: str) -> list[str]:
         if len(line) >= 2:
             out.append(line)
     return out
+
+
+# --- Eigene Briefköpfe (Word-Vorlagen) ----------------------------------------------
+@app.get("/api/vorlagen", dependencies=[Depends(require_auth)])
+async def vorlagen_liste():
+    from . import export as ex
+    std = [{"id": n, "name": "Stadt Heilbronn (Standard)" if n == "briefkopf-heilbronn" else n, "eigen": False}
+           for n in ex.vorlagen()]
+    return std + [{"id": f"eigen:{v['id']}", "name": v["name"], "eigen": True} for v in ex.eigene_vorlagen()]
+
+
+@app.post("/api/vorlagen", dependencies=[Depends(require_auth)])
+async def vorlage_hochladen(file: UploadFile = File(...), name: str = Form("")):
+    """Word-Datei mit eigenem Briefkopf hochladen. Kopf-/Fußzeile werden übernommen; optional Platzhalter
+    {{TITEL}}, {{DATUM}}, {{AMT}}, {{GZ}}, {{TELEFON}}."""
+    import io, json, secrets
+    from docx import Document
+    from . import export as ex
+    if not (file.filename or "").lower().endswith(".docx"):
+        raise HTTPException(400, "Bitte eine Word-Datei (.docx) hochladen.")
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:
+        raise HTTPException(400, "Die Datei ist größer als 10 MB.")
+    try:
+        Document(io.BytesIO(data))
+    except Exception:
+        raise HTTPException(400, "Die Datei lässt sich nicht als Word-Dokument öffnen.")
+    name = (name or Path(file.filename).stem).strip()[:80] or "Eigener Briefkopf"
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:40] or "briefkopf"
+    vid = f"{slug}-{secrets.token_hex(3)}"
+    (ex.EIGENE_DIR / f"{vid}.docx").write_bytes(data)
+    (ex.EIGENE_DIR / f"{vid}.json").write_text(json.dumps({"name": name}, ensure_ascii=False), "utf-8")
+    return {"id": f"eigen:{vid}", "name": name, "eigen": True}
+
+
+@app.delete("/api/vorlagen/{vid}", dependencies=[Depends(require_auth)])
+async def vorlage_loeschen(vid: str):
+    from . import export as ex
+    vid = vid.removeprefix("eigen:")
+    if not re.fullmatch(r"[a-z0-9-]+", vid):
+        raise HTTPException(400, "Ungültige Vorlage")
+    f = ex.EIGENE_DIR / f"{vid}.docx"
+    if not f.exists():
+        raise HTTPException(404, "Vorlage nicht gefunden")
+    f.unlink()
+    f.with_suffix(".json").unlink(missing_ok=True)
+    return {"ok": True}
 
 
 @app.post("/api/tagesordnung/lesen", dependencies=[Depends(require_auth)])

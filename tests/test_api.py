@@ -397,3 +397,28 @@ def test_method_override_for_restrictive_proxies(client):
     assert client.get(f"/api/transcripts/{tid}").json()["title"] == "Per POST umbenannt"
     assert client.post(f"/api/transcripts/{tid}?_method=DELETE").status_code == 200
     assert client.get(f"/api/transcripts/{tid}").status_code == 404
+
+
+def test_eigene_briefkoepfe(client):
+    import io
+    import docx
+    # eigener Briefkopf: Kopfzeile mit Text, Inhalt soll verschwinden
+    d = docx.Document()
+    d.sections[0].header.paragraphs[0].text = "Amt 99 – Musterkopf"
+    d.add_paragraph("Alter Inhalt, der nicht übernommen werden soll")
+    buf = io.BytesIO(); d.save(buf)
+    r = client.post("/api/vorlagen", files={"file": ("kopf.docx", buf.getvalue(), "application/octet-stream")}, data={"name": "Amt 99"})
+    assert r.status_code == 200, r.text
+    vid = r.json()["id"]
+    liste = client.get("/api/vorlagen").json()
+    assert any(v["id"] == vid and v["eigen"] for v in liste) and any(not v["eigen"] for v in liste)
+    assert client.post("/api/vorlagen", files={"file": ("x.txt", b"hallo", "text/plain")}).status_code == 400
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": "Kopf-Test"}).json()["id"]
+    wait_done(client, tid)
+    out = docx.Document(io.BytesIO(client.get(f"/api/transcripts/{tid}/export", params={"format": "docx", "vorlage": vid}).content))
+    body = "\n".join(p.text for p in out.paragraphs)
+    assert "Kopf-Test" in body and "Alter Inhalt" not in body
+    assert "Musterkopf" in out.sections[0].header.paragraphs[0].text
+    assert client.post(f"/api/vorlagen/{vid}?_method=DELETE").status_code == 200
+    assert not any(v["id"] == vid for v in client.get("/api/vorlagen").json())

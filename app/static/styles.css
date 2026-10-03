@@ -705,3 +705,14 @@ details.sitzung summary .s-hint { font-weight: 400; font-size: var(--fs-xs); col
 .sys-hint { margin: .3rem 0 0 calc(18px + .6rem); font-size: var(--fs-xs); color: var(--muted); line-height: 1.4; }
 #r-mic-more { align-self: flex-start; margin-top: .2rem; font-size: var(--fs-xs); }
 @media (max-width: 900px) { .sys-audio .consent { margin-top: .75rem; } .sys-audio + .consent { margin-top: .5rem; } }
+
+/* Eigene Briefköpfe */
+.vl-list { display: flex; flex-direction: column; gap: .3rem; margin: .8rem 0; }
+.vl-row { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .5rem .7rem; border: 1px solid var(--line); border-radius: 10px; }
+.vl-add { display: grid; grid-template-columns: 1fr 1fr; gap: .7rem; }
+.vl-add input[type=file] { font: inherit; font-size: var(--fs-sm); padding: .45rem 0; }
+.modal-card code { background: #F1F3F6; border-radius: 4px; padding: 0 .25rem; font-size: .85em; }
+.vl-pick { display: flex; flex-wrap: wrap; gap: .3rem; padding: .1rem .5rem .4rem; }
+.menu-list .vl-pick button { width: auto; min-height: 0; padding: .3rem .6rem; border: 1px solid var(--line-strong); border-radius: 99px; font-size: var(--fs-sm); color: var(--text); }
+.menu-list .vl-pick button.on { background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-dark); font-weight: 600; }
+@media (max-width: 640px) { .vl-add { grid-template-columns: 1fr; } .menu-list .vl-pick button { min-height: 38px; } }
