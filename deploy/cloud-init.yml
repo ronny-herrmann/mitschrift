@@ -10,6 +10,7 @@ write_files:
     content: |
       REPO_URL=https://github.com/ronny-herrmann/mitschrift.git
       ACCESS_PASSWORD=HIER-EIN-LANGES-PASSWORT
+      TEST_ACCESS_PASSWORD=HIER-EIN-ANDERES-PASSWORT-FUER-TEST
       ACME_EMAIL=deine@email.de
       # Nur bei privatem Repository: Token mit reinem Lese-Recht auf dieses eine Repository
       GITHUB_TOKEN=

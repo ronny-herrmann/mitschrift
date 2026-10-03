@@ -261,6 +261,32 @@ def _heading(doc, text: str, level: int):
     return p
 
 
+def _aufgaben_tabelle(doc, rows: list[list[str]]) -> None:
+    """Aufgaben als Tabelle Wer | Was | Bis wann (Kopfzeile grau)."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Cm
+    tbl = doc.add_table(rows=1, cols=3)
+    if _style_da(doc, "Table Grid"):
+        tbl.style = doc.styles["Table Grid"]
+    for cell, txt in zip(tbl.rows[0].cells, ("Wer", "Was", "Bis wann")):
+        cell.text = ""
+        r = cell.paragraphs[0].add_run(txt)
+        r.bold = True
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear"); shd.set(qn("w:color"), "auto"); shd.set(qn("w:fill"), "F2F2F2")
+        cell._tc.get_or_add_tcPr().append(shd)
+    for row in rows:
+        row = (row + ["", "", ""])[:3]
+        cells = tbl.add_row().cells
+        for cell, txt in zip(cells, row):
+            cell.text = txt if txt and txt not in ("-", "–") else "–"
+    for row in tbl.rows:
+        for cell, w in zip(row.cells, (Cm(3.5), Cm(9.5), Cm(3))):
+            cell.width = w
+    doc.add_paragraph()
+
+
 def _bullet(doc, text: str, briefkopf: bool):
     from docx.shared import Cm
     if not briefkopf and _style_da(doc, "List Bullet"):

@@ -11,8 +11,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from starlette.concurrency import run_in_threadpool
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -213,6 +214,29 @@ CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline';
        "base-uri 'self'; form-action 'self'; frame-ancestors 'none'")
 
 
+def _client_ip(request: Request) -> str:
+    """Adresse des Aufrufers. uvicorn setzt request.client aus X-Forwarded-For nur für vertrauenswürdige Proxys
+    (--forwarded-allow-ips); der Header selbst wird hier bewusst nicht gelesen (fälschbar)."""
+    return request.client.host if request.client else "?"
+
+
+@app.middleware("http")
+async def csrf_guard(request: Request, call_next):
+    """Schreibende Aufrufe nur von der eigenen Seite (Schutz gegen Cross-Site-Requests, zusätzlich zu SameSite=Strict).
+    Browser schicken Sec-Fetch-Site bzw. Origin; passt beides nicht zum eigenen Host → 403."""
+    if request.method in ("POST", "PUT", "PATCH", "DELETE") and request.url.path.startswith("/api/"):
+        site = request.headers.get("sec-fetch-site")
+        origin = request.headers.get("origin")
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        ok = site in ("same-origin", "none") if site else True
+        if origin:
+            from urllib.parse import urlparse
+            ok = ok and urlparse(origin).netloc.lower() == host.split(",")[0].strip().lower()
+        if not ok:
+            return JSONResponse({"detail": "Anfrage von fremder Seite abgelehnt"}, status_code=403)
+    return await call_next(request)
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -256,7 +280,7 @@ class LoginBody(BaseModel):
 
 @app.post("/api/login")
 async def login(body: LoginBody, request: Request):
-    client = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0].strip()
+    client = _client_ip(request)
     if auth.locked(client):
         raise HTTPException(429, "Zu viele Fehlversuche – bitte 15 Minuten warten.")
     if not auth.enabled() or not auth.check_password(body.password, client):
@@ -276,7 +300,7 @@ class PasswortBody(BaseModel):
 @app.post("/api/zugang", dependencies=[Depends(require_auth)])
 async def passwort_aendern(body: PasswortBody, request: Request):
     """Zugangspasswort dieser Instanz ändern (Test und Produktiv getrennt). Alle anderen werden abgemeldet."""
-    client = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0].strip()
+    client = _client_ip(request)
     if not auth.enabled():
         raise HTTPException(400, "Für diese Instanz ist kein Zugangspasswort eingerichtet.")
     if not auth.check_password(body.alt, client):
@@ -301,7 +325,10 @@ async def logout():
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True}
+    """Für Docker/Uptime-Checks: 503, solange das Sprachmodell nicht geladen ist oder der Ladevorgang scheiterte."""
+    if state.load_status == "fehler":
+        return JSONResponse({"ok": False, "status": "fehler"}, status_code=503)
+    return {"ok": True, "status": state.load_status}
 
 
 # --- Hilfsfunktionen ---------------------------------------------------------------
@@ -560,6 +587,9 @@ async def upload(file: UploadFile = File(...), title: str = Form(""), glossar: s
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD:
         raise HTTPException(400, f"Dateityp {suffix or '(ohne Endung)'} wird nicht unterstützt")
+    size = file.size or 0
+    if size > settings.max_upload_mb * 1024 * 1024:
+        raise HTTPException(413, f"Die Datei ist größer als {settings.max_upload_mb} MB. Bitte kürzen oder in Teilen hochladen.")
     t = state.store.create_transcript(
         title=title.strip() or Path(file.filename).stem, source="upload", status="processing",
         model=state.transcriber.final_backend.info().get("model", ""), language=settings.language,
@@ -571,8 +601,29 @@ async def upload(file: UploadFile = File(...), title: str = Form(""), glossar: s
         "ausschluss": _ausschluss(ausschluss == "1"),
     })
     dest = settings.audio_dir / f"{t.id}{suffix}"
-    with dest.open("wb") as f:
-        shutil.copyfileobj(file.file, f, length=1024 * 1024)
+    limit = settings.max_upload_mb * 1024 * 1024
+
+    def kopieren() -> int:
+        n = 0
+        with dest.open("wb") as f:
+            while chunk := file.file.read(1024 * 1024):
+                n += len(chunk)
+                if n > limit:
+                    break
+                f.write(chunk)
+        return n
+
+    n = await run_in_threadpool(kopieren)
+    if n > limit:
+        dest.unlink(missing_ok=True)
+        state.store.delete_transcript(t.id)
+        raise HTTPException(413, f"Die Datei ist größer als {settings.max_upload_mb} MB. Bitte kürzen oder in Teilen hochladen.")
+    from .audio import probe_duration
+    dauer = await run_in_threadpool(probe_duration, dest)
+    if dauer and dauer > settings.max_audio_minutes * 60:
+        dest.unlink(missing_ok=True)
+        state.store.delete_transcript(t.id)
+        raise HTTPException(413, f"Die Aufnahme ist länger als {settings.max_audio_minutes // 60} Stunden. Bitte in Teilen hochladen.")
     state.store.update_transcript(t.id, audio_path=str(dest))
     state.jobs.enqueue(t.id)
     return {"id": t.id, "title": t.title, "status": "processing"}
@@ -816,12 +867,22 @@ async def glossar_aemter():
     return sorted({e.get("amt", "") for e in state.store.get_setting("glossar", []) if e.get("amt")})
 
 
+async def _read_limited(file: UploadFile) -> bytes:
+    """Kleine Importdateien (Glossar, Tagesordnung, Briefkopf) begrenzt einlesen."""
+    limit = settings.max_import_mb * 1024 * 1024
+    data = await file.read(limit + 1)
+    if len(data) > limit:
+        raise HTTPException(413, f"Die Datei ist größer als {settings.max_import_mb} MB.")
+    return data
+
+
+
 @app.post("/api/glossar/import", dependencies=[Depends(require_auth)])
 async def glossar_import(file: UploadFile = File(...), amt: str = Form("")):
     """Excel (.xlsx) oder CSV einlesen. Spalten: „Erkannt als“/„Falsch“, „Richtig“, optional „Amt“ –
     ohne Kopfzeile gelten die ersten beiden Spalten. Liefert die Einträge zurück (noch nicht gespeichert)."""
     from .glossar import read_table
-    data = await file.read()
+    data = await _read_limited(file)
     try:
         rows = read_table(file.filename or "", data)
     except ValueError as e:
@@ -891,9 +952,7 @@ async def vorlage_hochladen(file: UploadFile = File(...), name: str = Form("")):
     from . import export as ex
     if not (file.filename or "").lower().endswith(".docx"):
         raise HTTPException(400, "Bitte eine Word-Datei (.docx) hochladen.")
-    data = await file.read()
-    if len(data) > 10 * 1024 * 1024:
-        raise HTTPException(400, "Die Datei ist größer als 10 MB.")
+    data = await _read_limited(file)
     try:
         Document(io.BytesIO(data))
     except Exception:
@@ -924,8 +983,9 @@ async def vorlage_loeschen(vid: str):
 async def tagesordnung_lesen(file: UploadFile = File(...)):
     """Tagesordnung aus Word, PDF oder Text lesen → Liste der Punkte (noch nicht gespeichert)."""
     from .glossar import read_agenda
+    data = await _read_limited(file)
     try:
-        punkte = _clean_list(read_agenda(file.filename or "", await file.read()))
+        punkte = _clean_list(await run_in_threadpool(read_agenda, file.filename or "", data))
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not punkte:

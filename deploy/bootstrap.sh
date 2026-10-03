@@ -5,6 +5,7 @@
 # Erwartet /opt/mitschrift/settings.env mit mindestens:
 #   REPO_URL=https://github.com/<konto>/mitschrift.git
 #   ACCESS_PASSWORD=<Zugangspasswort für die Oberfläche>
+#   TEST_ACCESS_PASSWORD=<optional: eigenes Passwort für die Test-Instanz>
 # Optional: GITHUB_TOKEN (nur bei privatem Repo, nur Lese-Recht), ACME_EMAIL, TEST_HOST, PROD_HOST,
 #           LLM_GGUF, PROD_BRANCH (Standard: stable), TEST_BRANCH (Standard: main)
 set -euo pipefail
@@ -97,7 +98,8 @@ open(p, "w").write("\n".join(out) + "\n")
 PY
     }
     set_env INSTANCE "$inst"
-    set_env ACCESS_PASSWORD "$ACCESS_PASSWORD"
+    # Test und Produktiv bekommen getrennte Passwörter (TEST_ACCESS_PASSWORD in settings.env, sonst ACCESS_PASSWORD)
+    if [ "$inst" = test ] && [ -n "${TEST_ACCESS_PASSWORD:-}" ]; then set_env ACCESS_PASSWORD "$TEST_ACCESS_PASSWORD"; else set_env ACCESS_PASSWORD "$ACCESS_PASSWORD"; fi
     set_env SESSION_SECRET "$(openssl rand -hex 32)"
     set_env COOKIE_SECURE 1
     set_env MODELS_HOST_DIR "$BASE/models"
@@ -108,8 +110,10 @@ PY
     set_env RETENTION_AUDIO_HOURS 168
     set_env RETENTION_TRANSCRIPT_HOURS 720
   fi
+  chmod 600 "$dir/.env"
   chown -R 1000:1000 "$dir/data"
 done
+chmod 600 "$BASE/platform.env" 2>/dev/null || true
 chown -R 1000:1000 "$BASE/models"
 
 cat > "$BASE/platform.env" <<EOF

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+import re
 from pathlib import Path
 
 
@@ -20,7 +21,11 @@ def _load_dotenv(path: Path) -> None:
             continue
         key, _, value = line.partition("=")
         key = key.strip()
-        value = value.strip().strip('"').strip("'")
+        value = value.strip()
+        if value[:1] in ('"', "'"):
+            value = value[1:].split(value[0], 1)[0]
+        else:
+            value = re.split(r"\s+#", value, 1)[0].strip()   # Inline-Kommentar „550   # Pause“ abschneiden
         os.environ.setdefault(key, value)
 
 
@@ -91,6 +96,10 @@ class Settings:
     # Automatisch bereinigen (live und nach dem Stopp)? Standard: nein – die Nutzenden klicken selbst auf „Bereinigen“.
     auto_ai_clean: bool = field(default_factory=lambda: _env_bool("AUTO_AI_CLEAN", False))
     # Pflicht-Bestätigung: keine Sozialdaten aus Einzelfällen / keine Berufsgeheimnisse (siehe FAQ)
+    # Obergrenzen (Schutz vor Überlastung): Upload-Dateigröße (MB), Audiodauer (Minuten), Import-Dateien (MB)
+    max_upload_mb: int = field(default_factory=lambda: _env_int("MAX_UPLOAD_MB", 600))
+    max_audio_minutes: int = field(default_factory=lambda: _env_int("MAX_AUDIO_MINUTES", 240))
+    max_import_mb: int = field(default_factory=lambda: _env_int("MAX_IMPORT_MB", 20))
     ausschluss_pflicht: bool = field(default_factory=lambda: _env_bool("AUSSCHLUSS_PFLICHT", True))
     vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
     vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))

@@ -442,3 +442,27 @@ def test_ausschluss_bestaetigung_pflicht(client, monkeypatch):
     with client.websocket_connect("/ws/live") as ws:
         m = ws.receive_json()
         assert m["type"] == "error" and "Sozialdaten" in m["message"]
+
+
+def test_word_export_mit_aufgabentabelle(client):
+    import io
+    import docx
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": "Aufgaben"}).json()["id"]
+    wait_done(client, tid)
+    md = "## Ergebnisse\n- Punkt eins [S0]\n\n## Aufgaben\n- Frau Müller | Bericht schreiben | Freitag [S1]\n- Herr Kurz | Termin klären | 15.10. [S2]\n"
+    assert client.post(f"/api/transcripts/{tid}/protokoll/import", json={"style": "ergebnis", "protokoll_md": md}).status_code == 200
+    r = client.get(f"/api/transcripts/{tid}/export", params={"format": "protokoll", "style": "ergebnis"})
+    assert r.status_code == 200, r.text
+    d = docx.Document(io.BytesIO(r.content))
+    tabellen = [t for t in d.tables if t.rows and t.rows[0].cells[0].text == "Wer"]
+    assert tabellen and len(tabellen[0].rows) == 3 and tabellen[0].rows[1].cells[1].text == "Bericht schreiben"
+
+
+def test_csrf_guard_blocks_foreign_origin(client):
+    r = client.post("/api/logout", headers={"Origin": "https://boese.example", "Sec-Fetch-Site": "cross-site"})
+    assert r.status_code == 403
+    r = client.post("/api/logout", headers={"Sec-Fetch-Site": "same-origin"})
+    assert r.status_code == 204
+    r = client.post("/api/logout")   # ohne Browser-Header (curl, Tests): erlaubt
+    assert r.status_code == 204

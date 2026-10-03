@@ -23,7 +23,7 @@ def ffmpeg_available() -> bool:
     return shutil.which("ffmpeg") is not None
 
 
-def decode_to_pcm16k(path: str | Path) -> np.ndarray:
+def decode_to_pcm16k(path: str | Path, timeout_s: int = 1800) -> np.ndarray:
     """Dekodiert eine Audio-/Videodatei (mp3, m4a, wav, webm, mp4, ogg …) zu 16 kHz mono float32."""
     path = Path(path)
     if not path.exists():
@@ -39,10 +39,23 @@ def decode_to_pcm16k(path: str | Path) -> np.ndarray:
         "ffmpeg", "-nostdin", "-loglevel", "error", "-i", str(path),
         "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-f", "s16le", "-",
     ]
-    proc = subprocess.run(cmd, capture_output=True)
+    try:
+        proc = subprocess.run(cmd, capture_output=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        raise AudioDecodeError(f"Dekodierung abgebrochen (länger als {timeout_s // 60} Minuten)")
     if proc.returncode != 0:
         raise AudioDecodeError(proc.stderr.decode("utf-8", "ignore").strip() or "ffmpeg-Fehler")
     return pcm16_bytes_to_float(proc.stdout)
+
+
+def probe_duration(path: str | Path, timeout_s: int = 60) -> float | None:
+    """Dauer in Sekunden per ffprobe (None, wenn nicht bestimmbar) – zum Prüfen von Obergrenzen vor dem Dekodieren."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(path)],
+                             capture_output=True, timeout=timeout_s)
+        return float(out.stdout.decode().strip()) if out.returncode == 0 and out.stdout.strip() else None
+    except Exception:
+        return None
 
 
 def _read_wav_16k(path: Path) -> np.ndarray:

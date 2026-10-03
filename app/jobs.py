@@ -82,7 +82,14 @@ class JobQueue:
         return self._q.qsize()
 
     def resume_unfinished(self) -> None:
-        """Nach einem Neustart: angefangene Jobs erneut einreihen."""
+        """Nach einem Neustart: angefangene Jobs erneut einreihen; verwaiste Rohdaten (.pcm ohne Transkript) löschen."""
+        for f in self.settings.audio_dir.glob("*.pcm"):
+            # .pcm existiert nur während einer laufenden Live-Aufnahme – nach einem Neustart ist jede davon verwaist
+            try:
+                f.unlink()
+                log.info("Verwaiste Rohaufnahme gelöscht: %s", f.name)
+            except OSError:
+                pass
         for t in self.store.list_transcripts(limit=10_000):
             if t.status in ("processing", "refining") and t.audio_path and Path(t.audio_path).exists():
                 log.info("Setze unterbrochenen Job fort: %s", t.id)
@@ -115,10 +122,12 @@ class JobQueue:
         if not t or not t.audio_path or t.status not in ("processing", "refining"):
             return
         refine = t.status == "refining"
-        log.info("%s %s (%s)", "Verfeinere" if refine else "Transkribiere", tid, t.title)
+        log.info("%s %s", "Verfeinere" if refine else "Transkribiere", tid)   # kein Titel im Log (kann personenbezogen sein)
         t0 = time.time()
         audio = decode_to_pcm16k(t.audio_path)
         duration = len(audio) / 16_000
+        if duration > self.settings.max_audio_minutes * 60:
+            raise ValueError(f"Aufnahme länger als {self.settings.max_audio_minutes // 60} Stunden – bitte in Teilen hochladen")
         self.store.update_transcript(tid, duration=round(duration, 2))
         tempo = float(self.store.get_setting("tempo:verarbeitung", self.TEMPO_START))
         self._started[tid] = (t0, max(4.0, duration * tempo + 2.0))

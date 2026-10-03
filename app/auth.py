@@ -8,6 +8,7 @@ Das Cookie ist HttpOnly, SameSite=Strict und bei HTTPS „Secure“.
 from __future__ import annotations
 
 import hashlib
+import logging
 import hmac
 import secrets
 import time
@@ -17,6 +18,7 @@ from .config import settings
 
 COOKIE = "mitschrift_session"
 _secret = (settings.session_secret or secrets.token_hex(32)).encode()
+log = logging.getLogger(__name__)
 _failures: dict[str, list[float]] = defaultdict(list)
 _store = None   # für ein in der Anwendung geändertes Zugangspasswort
 
@@ -68,12 +70,24 @@ def valid_token(token: str | None) -> bool:
     return hmac.compare_digest(sig, expected)
 
 
+_global_fails: list[float] = []   # Fehlversuche insgesamt (unabhängig von der Absenderadresse)
+MAX_PER_CLIENT, MAX_GLOBAL, WINDOW = 10, 60, 900
+
+
+def _prune(now: float) -> None:
+    for k in [k for k, v in _failures.items() if not v or now - v[-1] > WINDOW]:
+        _failures.pop(k, None)
+    _global_fails[:] = [t for t in _global_fails if now - t < WINDOW]
+
+
 def check_password(password: str, client: str) -> bool:
-    """Passwort prüfen, mit einfacher Sperre gegen Durchprobieren (5 Fehlversuche / 15 min je IP)."""
+    """Passwort prüfen, mit Sperre gegen Durchprobieren: 10 Fehlversuche / 15 min je Absender und 60 insgesamt
+    (Behörden-Proxys bündeln viele Nutzer hinter einer Adresse – deshalb je Absender großzügiger, insgesamt gedeckelt)."""
     now = time.time()
-    fails = [t for t in _failures[client] if now - t < 900]
+    _prune(now)
+    fails = [t for t in _failures[client] if now - t < WINDOW]
     _failures[client] = fails
-    if len(fails) >= 5:
+    if len(fails) >= MAX_PER_CLIENT or len(_global_fails) >= MAX_GLOBAL:
         return False
     o = _override()
     if o:
@@ -82,6 +96,8 @@ def check_password(password: str, client: str) -> bool:
         ok = hmac.compare_digest(password.encode(), settings.access_password.encode())
     if not ok:
         fails.append(now)
+        _global_fails.append(now)
+        log.warning("Fehlgeschlagene Anmeldung von %s (%d/%d in 15 min)", client, len(fails), MAX_PER_CLIENT)
     else:
         _failures.pop(client, None)
     return ok
@@ -89,4 +105,5 @@ def check_password(password: str, client: str) -> bool:
 
 def locked(client: str) -> bool:
     now = time.time()
-    return len([t for t in _failures.get(client, []) if now - t < 900]) >= 5
+    _prune(now)
+    return len([t for t in _failures.get(client, []) if now - t < WINDOW]) >= MAX_PER_CLIENT or len(_global_fails) >= MAX_GLOBAL
