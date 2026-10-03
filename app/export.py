@@ -276,7 +276,7 @@ def _bullet(doc, text: str, briefkopf: bool):
 
 def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str = "Zusammenfassung",
             fliesstext: bool = False, nur_protokoll: bool = False, pruefstatus: str = "",
-            teilnehmende: list[str] | None = None, vorlage: str | None = None) -> bytes:
+            teilnehmende: list[str] | None = None, vorlage: str | None = None, ausschluss: bool = False) -> bytes:
     from docx.shared import Cm, Pt, RGBColor
 
     art = protokoll_name if protokoll_md else ("Fließtext" if fliesstext else "Transkript")
@@ -298,7 +298,9 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
             _sdt(p, "Name eintragen", "protokollfuehrung")
         else:
             p.add_run(wert)
-    hinweis = doc.add_paragraph(f"Automatisch erstellt mit dem Protokollanten der Stadt Heilbronn · Spracherkennung: {t.model}")
+    hinweis = doc.add_paragraph(f"Automatisch erstellt mit dem Protokollanten der Stadt Heilbronn · Spracherkennung: {t.model}"
+                                + (" · Bei der Aufnahme bestätigt: keine Sozialdaten aus Einzelfällen, keine Berufsgeheimnisse"
+                                   if ausschluss else ""))
     hinweis.runs[0].font.size = Pt(8)
     hinweis.runs[0].font.color.rgb = RGBColor(0x80, 0x80, 0x80)
 

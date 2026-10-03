@@ -227,6 +227,26 @@
   }
   window.addEventListener('hashchange', route);
 
+  // ================================================================ Bestätigung: keine Sozialdaten / Berufsgeheimnisse
+  const ausschlussFeld = (p) => `<div class="consent aus"><label><input type="checkbox" id="${p}-aus"><span>Keine Sozialdaten aus Einzelfällen (z. B. Jugendamt, Sozialamt) und keine Berufsgeheimnisse</span></label><button type="button" class="info-btn" data-aus-info aria-label="Mehr dazu" title="Mehr dazu">i</button></div>`;
+  function ausschlussInfo() {
+    const c = modal.open(`<h2>Warum diese Bestätigung?</h2>
+      <div class="aus-info">
+        <p>Der Protokollant läuft in der Testphase auf einem gemieteten Server eines privaten Anbieters in Deutschland. Für manche Gespräche gelten strengere Regeln – sie gehören deshalb <b>nicht</b> in den Protokollanten:</p>
+        <ul>
+          <li><b>Sozialdaten aus Einzelfällen</b>, z. B. Fallgespräche im Jugendamt oder Sozialamt, Leistungsangelegenheiten nach dem Sozialgesetzbuch. Sie unterliegen dem Sozialgeheimnis; ein privater Dienstleister darf sie nur unter engen Voraussetzungen und nach Anzeige bei der Aufsichtsbehörde verarbeiten (§ 35 SGB I, § 80 SGB X).</li>
+          <li><b>Jugendhilfe:</b> Was einer Fachkraft anvertraut wurde, darf grundsätzlich nur mit Einwilligung der Person weitergegeben werden (§ 65 SGB VIII).</li>
+          <li><b>Berufsgeheimnisse</b>, z. B. Beratungsgespräche in der Sozialarbeit, ärztliche oder psychologische Gespräche (§ 203 StGB).</li>
+        </ul>
+        <p><b>Unproblematisch</b> sind Dienstbesprechungen, Projekt- und Abstimmungstermine oder Arbeitsgruppen – solange dort keine Einzelfälle mit Sozialdaten besprochen werden.</p>
+        <p><b>Unsicher?</b> Dann bitte nicht aufnehmen und kurz mit der Datenschutzbeauftragten klären.</p>
+        <p class="muted small">Unabhängig davon müssen alle Anwesenden der Aufnahme zustimmen (§ 201 StGB). Ihre Bestätigung wird mit der Aufnahme gespeichert und steht im Word-Export.</p>
+      </div>
+      <div class="modal-actions"><button class="btn primary" data-x>Verstanden</button></div>`);
+    $('[data-x]', c).onclick = modal.close;
+  }
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-aus-info]')) { e.preventDefault(); ausschlussInfo(); } });
+
   // ================================================================ Aufnahme
   async function renderAufnahme() {
     view.innerHTML = `
@@ -243,10 +263,11 @@
             <label class="consent"><input type="checkbox" id="r-sys"><span>Online-Besprechung (Webex, Teams …): Ton des Computers mit aufnehmen</span></label>
             <div class="sys-hint hidden" id="r-sys-hint">Beim Start „Gesamter Bildschirm“ wählen und „Systemaudio teilen“ einschalten – aufgenommen wird nur der Ton.</div>
           </div>
+          ${ausschlussFeld('r')}
           <label class="consent"><input type="checkbox" id="r-consent"><span>Alle Teilnehmenden sind über Aufzeichnung und Transkription informiert und einverstanden.</span></label>
           <div class="rec-start">
             <button class="big-rec" id="r-start" disabled aria-label="Aufnahme starten"><span></span></button>
-            <div class="rec-start-text"><strong>Aufnahme starten</strong><div class="rec-hint" id="r-hint">Bitte zuerst die Information der Teilnehmenden bestätigen.</div></div>
+            <div class="rec-start-text"><strong>Aufnahme starten</strong><div class="rec-hint" id="r-hint">Bitte zuerst beide Häkchen setzen.</div></div>
           </div>
         </div>
         <div class="rec-tips">
@@ -303,10 +324,14 @@
       $('#r-sys-wrap').classList.remove('hidden');
       $('#r-sys').addEventListener('change', (e) => $('#r-sys-hint').classList.toggle('hidden', !e.target.checked));
     }
+    const aus = $('#r-aus');
     const updateStart = () => {
-      startBtn.disabled = !consent.checked || !health.ready;
-      hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : consent.checked ? 'Bereit – zum Starten auf den roten Knopf tippen.' : 'Bitte zuerst die Information der Teilnehmenden bestätigen.';
+      const ok = consent.checked && aus.checked;
+      startBtn.disabled = !ok || !health.ready;
+      hint.textContent = !health.ready ? 'Sprachmodell lädt noch …' : ok ? 'Bereit – zum Starten auf den roten Knopf tippen.'
+        : (!aus.checked && !consent.checked) ? 'Bitte zuerst beide Häkchen setzen.' : !aus.checked ? 'Bitte noch bestätigen: keine Sozialdaten, keine Berufsgeheimnisse.' : 'Bitte noch die Information der Teilnehmenden bestätigen.';
     };
+    aus.addEventListener('change', updateStart);
     fillGlossarSelect($('#r-glossar')); bindSitzung('r');
     consent.addEventListener('change', updateStart);
     document.addEventListener('health', updateStart);
@@ -410,7 +435,7 @@
       const title = $('#r-title').value.trim() || 'Aufnahme ' + fmtDate(new Date().toISOString(), { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       const sd = sitzungsDaten('r');
-      ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}&glossar=${encodeURIComponent($('#r-glossar').value)}&teilnehmende=${encodeURIComponent(sd.teilnehmende.join(','))}`);
+      ws = new WebSocket(`${proto}://${location.host}/ws/live?title=${encodeURIComponent(title)}&glossar=${encodeURIComponent($('#r-glossar').value)}&teilnehmende=${encodeURIComponent(sd.teilnehmende.join(','))}&ausschluss=${$('#r-aus').checked ? 1 : 0}`);
       ws.binaryType = 'arraybuffer';
       const pending = [];
       ws.onopen = () => { pending.forEach((b) => ws.send(b)); pending.length = 0; };
@@ -550,22 +575,30 @@
       <div class="card up-card">
         <div class="rec-fields"><label>Titel<input id="up-title" type="text" placeholder="optional – sonst Dateiname"></label><label>Glossar<select id="up-glossar"><option value="alle">Alle Ämter</option></select></label></div>
         ${sitzungsFelder('u')}
+        ${ausschlussFeld('u')}
       </div>
       <div class="jobs" id="jobs"></div>`;
     const drop = $('#drop'), input = $('#file'), jobs = $('#jobs');
     fillGlossarSelect($('#up-glossar')); bindSitzung('u');
-    drop.addEventListener('click', () => input.click());
-    drop.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') input.click(); });
+    drop.addEventListener('click', () => { if (ausOk()) input.click(); });
+    drop.addEventListener('keydown', (e) => { if ((e.key === 'Enter' || e.key === ' ') && ausOk()) input.click(); });
     ['dragenter', 'dragover'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('over'); }));
     ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('over'); }));
     drop.addEventListener('drop', (e) => upload([...e.dataTransfer.files]));
     input.addEventListener('change', () => { upload([...input.files]); input.value = ''; });
     const running = new Map();
+    const ausOk = () => {
+      if ($('#u-aus').checked) return true;
+      toast('Bitte zuerst bestätigen: keine Sozialdaten aus Einzelfällen, keine Berufsgeheimnisse.', true);
+      const w = $('#u-aus').closest('.consent'); w.classList.add('need'); w.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => w.classList.remove('need'), 2500);
+      return false;
+    };
     async function upload(files) {
+      if (!files.length || !ausOk()) return;
       for (const f of files) {
         const fd = new FormData(); fd.append('file', f); fd.append('title', $('#up-title').value.trim());
         const sd = sitzungsDaten('u');
-        fd.append('glossar', $('#up-glossar').value); fd.append('teilnehmende', sd.teilnehmende.join('\n')); fd.append('tagesordnung', sd.tagesordnung.join('\n'));
+        fd.append('glossar', $('#up-glossar').value); fd.append('teilnehmende', sd.teilnehmende.join('\n')); fd.append('tagesordnung', sd.tagesordnung.join('\n')); fd.append('ausschluss', '1');
         const row = document.createElement('div'); row.className = 'job';
         row.innerHTML = `<span class="name">${esc(f.name)}</span><div class="bar"><i></i></div><span class="chip">lädt hoch …</span>`;
         jobs.prepend(row);

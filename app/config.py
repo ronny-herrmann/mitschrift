@@ -90,6 +90,8 @@ class Settings:
     live_ai_clean: bool = field(default_factory=lambda: _env_bool("LIVE_AI_CLEAN", True))
     # Automatisch bereinigen (live und nach dem Stopp)? Standard: nein – die Nutzenden klicken selbst auf „Bereinigen“.
     auto_ai_clean: bool = field(default_factory=lambda: _env_bool("AUTO_AI_CLEAN", False))
+    # Pflicht-Bestätigung: keine Sozialdaten aus Einzelfällen / keine Berufsgeheimnisse (siehe FAQ)
+    ausschluss_pflicht: bool = field(default_factory=lambda: _env_bool("AUSSCHLUSS_PFLICHT", True))
     vad_min_speech_ms: int = field(default_factory=lambda: _env_int("VAD_MIN_SPEECH_MS", 250))
     vad_pad_ms: int = field(default_factory=lambda: _env_int("VAD_PAD_MS", 300))
 

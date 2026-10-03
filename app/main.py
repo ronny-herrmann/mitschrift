@@ -48,7 +48,14 @@ class State:
 state = State()
 
 
-META_DEFAULT = {"glossar": "alle", "teilnehmende": [], "tagesordnung": []}
+META_DEFAULT = {"glossar": "alle", "teilnehmende": [], "tagesordnung": [], "ausschluss": {}}
+AUSSCHLUSS_FEHLT = ("Bitte bestätigen, dass die Aufnahme keine Sozialdaten aus Einzelfällen (z. B. Jugendamt, Sozialamt) "
+                    "und keine Berufsgeheimnisse enthält.")
+
+
+def _ausschluss(ok: bool) -> dict:
+    """Bestätigung „keine Sozialdaten/Berufsgeheimnisse“ mit Zeitpunkt – wird mit dem Transkript gespeichert."""
+    return {"bestaetigt": True, "am": datetime.now(timezone.utc).isoformat(timespec="seconds")} if ok else {}
 
 
 def _meta(tid: str) -> dict:
@@ -546,8 +553,10 @@ async def get_audio(tid: str, download: bool = False):
 
 @app.post("/api/upload", dependencies=[Depends(require_auth)])
 async def upload(file: UploadFile = File(...), title: str = Form(""), glossar: str = Form("alle"),
-                 teilnehmende: str = Form(""), tagesordnung: str = Form("")):
+                 teilnehmende: str = Form(""), tagesordnung: str = Form(""), ausschluss: str = Form("")):
     require_ready()
+    if settings.ausschluss_pflicht and ausschluss != "1":
+        raise HTTPException(400, AUSSCHLUSS_FEHLT)
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in ALLOWED_UPLOAD:
         raise HTTPException(400, f"Dateityp {suffix or '(ohne Endung)'} wird nicht unterstützt")
@@ -559,6 +568,7 @@ async def upload(file: UploadFile = File(...), title: str = Form(""), glossar: s
         "glossar": glossar or "alle",
         "teilnehmende": _clean_list(re.split(r"[\n,;]", teilnehmende)),
         "tagesordnung": _clean_list(tagesordnung_zeilen(tagesordnung)),
+        "ausschluss": _ausschluss(ausschluss == "1"),
     })
     dest = settings.audio_dir / f"{t.id}{suffix}"
     with dest.open("wb") as f:
@@ -600,13 +610,13 @@ async def export(tid: str, format: str = "txt", zeit: bool = True, sprecher: boo
                 raise HTTPException(404, "Noch kein Protokoll vorhanden")
         pname = STYLES.get(p["style"], "Protokoll") if p else ""
         if format == "fliesstext":
-            data, suffix = to_docx(t, fliesstext=True, teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage), "Fliesstext"
+            data, suffix = to_docx(t, fliesstext=True, teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage, ausschluss=bool((_meta(tid).get("ausschluss") or {}).get("bestaetigt"))), "Fliesstext"
         elif format == "protokoll":
             data, suffix = to_docx(t, p["content"]["protokoll_md"], pname, nur_protokoll=True, pruefstatus=_pruefstatus(p),
-                                   teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage), pname
+                                   teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage, ausschluss=bool((_meta(tid).get("ausschluss") or {}).get("bestaetigt"))), pname
         else:
             data = to_docx(t, p["content"]["protokoll_md"] if p else None, pname, pruefstatus=_pruefstatus(p) if p else "",
-                           teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage)
+                           teilnehmende=_meta(tid)["teilnehmende"], vorlage=vorlage, ausschluss=bool((_meta(tid).get("ausschluss") or {}).get("bestaetigt")))
             suffix = f"Transkript und {pname}" if p else "Transkript"
         return Response(data, media_type=DOCX_TYPE, headers=_download_headers(t.title, suffix, "docx"))
     raise HTTPException(400, "format muss txt, md, srt, docx, protokoll oder fliesstext sein")
@@ -956,6 +966,11 @@ async def ws_live(ws: WebSocket):
         await ws.close(code=4503)
         return
     await ws.accept()
+    ausschluss = ws.query_params.get("ausschluss", "") == "1"
+    if settings.ausschluss_pflicht and not ausschluss:
+        await ws.send_json({"type": "error", "message": AUSSCHLUSS_FEHLT})
+        await ws.close(code=4400)
+        return
     title = ws.query_params.get("title", "")
     scope = ws.query_params.get("glossar", "alle")
     namen = _clean_list(re.split(r"[\n,;]", ws.query_params.get("teilnehmende", "")))
@@ -970,7 +985,8 @@ async def ws_live(ws: WebSocket):
                           llm_factory=get_llm, glossar_entries=glossar_entries(scope, namen))
     try:
         await session.start(title)
-        state.store.set_setting(f"meta:{session.transcript.id}", {**META_DEFAULT, "glossar": scope, "teilnehmende": namen})
+        state.store.set_setting(f"meta:{session.transcript.id}", {**META_DEFAULT, "glossar": scope, "teilnehmende": namen,
+                                                                  "ausschluss": _ausschluss(ausschluss)})
         while True:
             msg = await ws.receive()
             if msg.get("type") == "websocket.disconnect":

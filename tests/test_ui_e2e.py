@@ -82,6 +82,7 @@ def test_live_recording_in_browser(page, server):
     page.wait_for_function("document.querySelector('#sys').classList.contains('ok')", timeout=20_000)
     page.fill("#r-title", "E2E Live")
     assert page.is_disabled("#r-start")
+    page.check("#r-aus")
     page.check("#r-consent")
     _shot(page, "aufnahme_start")
     page.click("#r-start")
@@ -118,6 +119,7 @@ def test_live_recording_in_browser(page, server):
 
 def test_upload_detail_edit_and_summary_import(page, server):
     page.goto(server + "/#/hochladen")
+    page.check("#u-aus")
     page.set_input_files("#file", str(FIXTURES / "drei_saetze_de.wav"))
     page.wait_for_selector(".job .chip.ok", timeout=30_000)
     page.click(".job .chip.ok a")

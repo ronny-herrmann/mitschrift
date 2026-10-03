@@ -25,6 +25,7 @@ def app_env(tmp_path_factory):
     os.environ["VAD_MIN_SILENCE_MS"] = "600"
     os.environ["DIARIZATION"] = "0"
     os.environ["OFFLINE_MERGE_SHORT_S"] = "0"
+    os.environ["AUSSCHLUSS_PFLICHT"] = "0"   # eigener Test prüft die Pflicht
     os.environ["LIVE_PARTIALS"] = "1"
     return data
 

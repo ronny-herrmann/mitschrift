@@ -422,3 +422,23 @@ def test_eigene_briefkoepfe(client):
     assert "Musterkopf" in out.sections[0].header.paragraphs[0].text
     assert client.post(f"/api/vorlagen/{vid}?_method=DELETE").status_code == 200
     assert not any(v["id"] == vid for v in client.get("/api/vorlagen").json())
+
+
+def test_ausschluss_bestaetigung_pflicht(client, monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "ausschluss_pflicht", True)
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        assert client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}).status_code == 400
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        r = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"ausschluss": "1", "title": "Bestätigt"})
+    assert r.status_code == 200
+    tid = r.json()["id"]
+    assert client.get(f"/api/transcripts/{tid}").json()["meta"]["ausschluss"]["bestaetigt"] is True
+    wait_done(client, tid)
+    import io
+    import docx
+    d = docx.Document(io.BytesIO(client.get(f"/api/transcripts/{tid}/export", params={"format": "docx"}).content))
+    assert any("keine Sozialdaten" in p.text for p in d.paragraphs)
+    with client.websocket_connect("/ws/live") as ws:
+        m = ws.receive_json()
+        assert m["type"] == "error" and "Sozialdaten" in m["message"]
