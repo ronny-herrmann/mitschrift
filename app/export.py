@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import re
 from datetime import datetime
 
 from .store import Transcript
@@ -261,6 +262,21 @@ def _heading(doc, text: str, level: int):
     return p
 
 
+_AUFGABE = re.compile(r"^(?:(?P<wer>[^:|]{1,60}):\s+)?(?P<was>.+?)(?:\s+[–-]\s+bis\s+(?P<bis>.+))?$")
+
+
+def _aufgabe_zeile(text: str) -> list[str]:
+    """Eine Aufgabenzeile in [Wer, Was, Bis wann] zerlegen. Das Protokoll schreibt „Wer: Was – bis Datum“;
+    von Hand eingefügte Zeilen dürfen auch „Wer | Was | Bis“ sein. Unbekanntes wird zu –."""
+    text = text.strip()
+    if text.count("|") >= 2:
+        teile = [c.strip() for c in text.split("|")][:3]
+    else:
+        m = _AUFGABE.match(text)
+        teile = [m.group("wer") or "", m.group("was") or text, m.group("bis") or ""] if m else ["", text, ""]
+    return [t.strip() or "–" for t in teile]
+
+
 def _aufgaben_tabelle(doc, rows: list[list[str]]) -> None:
     """Aufgaben als Tabelle Wer | Was | Bis wann (Kopfzeile grau)."""
     from docx.oxml import OxmlElement
@@ -356,13 +372,13 @@ def to_docx(t: Transcript, protokoll_md: str | None = None, protokoll_name: str 
                 i += 1
                 if not line:
                     continue
-                # Aufgaben „Wer | Was | Bis wann“ als Tabelle
-                if section.lower().startswith("aufgaben") and line.startswith(("- ", "* ")) and line.count("|") >= 2:
+                # Aufgaben als Tabelle Wer | Was | Bis wann – aus „Wer: Was – bis Datum“ oder „Wer | Was | Bis“
+                if section.lower().startswith("aufgaben") and line.startswith(("- ", "* ")):
                     rows = [line]
-                    while i < len(lines) and lines[i].startswith(("- ", "* ")) and lines[i].count("|") >= 2:
+                    while i < len(lines) and lines[i].startswith(("- ", "* ")):
                         rows.append(lines[i])
                         i += 1
-                    _aufgaben_tabelle(doc, [[c.strip() for c in r[2:].split("|")][:3] for r in rows])
+                    _aufgaben_tabelle(doc, [_aufgabe_zeile(r[2:]) for r in rows])
                     continue
                 if line.startswith("## "):
                     section = line[3:].strip()

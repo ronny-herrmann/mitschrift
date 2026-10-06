@@ -466,3 +466,20 @@ def test_csrf_guard_blocks_foreign_origin(client):
     assert r.status_code == 204
     r = client.post("/api/logout")   # ohne Browser-Header (curl, Tests): erlaubt
     assert r.status_code == 204
+
+
+def test_word_export_aufgaben_aus_protokollzeilen(client):
+    """Das Protokoll schreibt Aufgaben als „Wer: Was – bis Datum“ – im Word wird daraus die Tabelle."""
+    import io
+    import docx
+    with open(FIXTURES / "drei_saetze_de.wav", "rb") as f:
+        tid = client.post("/api/upload", files={"file": ("a.wav", f, "audio/wav")}, data={"title": "Aufgaben 2"}).json()["id"]
+    wait_done(client, tid)
+    md = ("## Ergebnisse\n- Punkt eins [S0]\n\n## Aufgaben\n- Jonas Lang: Einladung der Testpersonen – bis 10.10. [S1]\n"
+          "- Anleitung schreiben [S2]\n")
+    assert client.post(f"/api/transcripts/{tid}/protokoll/import", json={"style": "ergebnis", "protokoll_md": md}).status_code == 200
+    r = client.get(f"/api/transcripts/{tid}/export", params={"format": "protokoll", "style": "ergebnis"})
+    d = docx.Document(io.BytesIO(r.content))
+    tab = [t for t in d.tables if t.rows and t.rows[0].cells[0].text == "Wer"][0]
+    zeilen = [[c.text for c in row.cells] for row in tab.rows[1:]]
+    assert zeilen == [["Jonas Lang", "Einladung der Testpersonen", "10.10."], ["–", "Anleitung schreiben", "–"]]
